@@ -120,7 +120,7 @@ private:
     run_loop(this_type&&);
 
     typedef scheduler::clock_type clock_type;
-    typedef detail::action_queue queue_type;
+    typedef detail::schedulable_queue<detail::time_schedulable<scheduler_base::clock_type::time_point>> queue_type;
 
     typedef detail::run_loop_state::item_type item_type;
     typedef detail::run_loop_state::const_reference_item_type const_reference_item_type;
@@ -135,7 +135,7 @@ public:
     {
         // take ownership so that the current_thread scheduler
         // uses the same queue on this thread
-        queue_type::ensure(sc->create_worker_interface());
+//        queue_type::ensure(sc->create_worker_interface());
     }
     ~run_loop()
     {
@@ -144,7 +144,7 @@ public:
         std::unique_lock<std::mutex> guard(state->lock);
 
         // release ownership
-        queue_type::destroy();
+//        queue_type::destroy();
 
         auto expired = std::move(state->q);
         if (!state->q.empty()) abort();
