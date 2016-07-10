@@ -7,6 +7,8 @@ Linux & OSX: [![Linux & Osx Status](http://img.shields.io/travis/Reactive-Extens
 
 [doxygen documentation](http://reactive-extensions.github.io/RxCpp)
 
+[![Join in on gitter.im](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/Reactive-Extensions/RxCpp?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+
 # Reactive Extensions:
 
 * Rx.NET: The Reactive Extensions (Rx) is a library for composing asynchronous and event-based programs using observable sequences and LINQ-style query operators.
@@ -105,15 +107,7 @@ namespace rxu=rxcpp::util;
 namespace rxsc=rxcpp::schedulers;
 namespace rxsub=rxcpp::subjects;
 
-// At this time, RxCpp will fail to compile if the contents
-// of the std namespace are merged into the global namespace
-// DO NOT USE: 'using namespace std;'
-
-#ifdef UNICODE
-int wmain(int argc, wchar_t** argv)
-#else
-int main(int argc, char** argv)
-#endif
+int main()
 {
     int c = 0;
 

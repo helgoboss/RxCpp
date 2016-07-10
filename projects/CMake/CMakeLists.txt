@@ -19,6 +19,7 @@ set(EXAMPLES_DIR ${RXCPP_DIR}/Rx/v2/examples)
 
 add_subdirectory(${EXAMPLES_DIR}/cep ${CMAKE_CURRENT_BINARY_DIR}/examples/cep)
 add_subdirectory(${EXAMPLES_DIR}/stop ${CMAKE_CURRENT_BINARY_DIR}/examples/stop)
+add_subdirectory(${EXAMPLES_DIR}/linesfrombytes ${CMAKE_CURRENT_BINARY_DIR}/examples/linesfrombytes)
 add_subdirectory(${EXAMPLES_DIR}/println ${CMAKE_CURRENT_BINARY_DIR}/examples/println)
 add_subdirectory(${EXAMPLES_DIR}/pythagorian ${CMAKE_CURRENT_BINARY_DIR}/examples/pythagorian)
 add_subdirectory(${EXAMPLES_DIR}/tests ${CMAKE_CURRENT_BINARY_DIR}/examples/tests)
@@ -33,16 +34,21 @@ set(RX_SOURCES
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-concat.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-concat_map.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-connect_forever.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-delay.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-distinct.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-distinct_until_changed.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-element_at.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-filter.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-finally.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-flat_map.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-group_by.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-ignore_elements.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-lift.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-map.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-merge.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-multicast.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-observe_on.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-on_error_resume_next.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-pairwise.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-publish.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-reduce.hpp
@@ -50,6 +56,7 @@ set(RX_SOURCES
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-repeat.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-replay.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-retry.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-sample_time.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-scan.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-skip.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-skip_until.hpp
@@ -59,6 +66,7 @@ set(RX_SOURCES
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-switch_on_next.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-take.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-take_until.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-tap.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-window.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-window_time.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-window_time_count.hpp
