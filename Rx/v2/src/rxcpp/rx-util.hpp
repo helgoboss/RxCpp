@@ -32,8 +32,9 @@ namespace rxcpp {
 
 namespace util {
 
-template<class T> using value_type_t = typename T::value_type;
+template<class T> using value_type_t = typename std::decay<T>::type::value_type;
 template<class T> using decay_t = typename std::decay<T>::type;
+template<class... TN> using result_of_t = typename std::result_of<TN...>::type;
 
 template<class T, std::size_t size>
 std::vector<T> to_vector(const T (&arr) [size]) {
@@ -82,6 +83,26 @@ struct all_true<B, BN...>
     static const bool value = B && all_true<BN...>::value;
 };
 
+template<bool... BN>
+using enable_if_all_true_t = typename std::enable_if<all_true<BN...>::value>::type;
+
+template<class... BN>
+struct all_true_type;
+
+template<class B>
+struct all_true_type<B>
+{
+    static const bool value = B::value;
+};
+template<class B, class... BN>
+struct all_true_type<B, BN...>
+{
+    static const bool value = B::value && all_true_type<BN...>::value;
+};
+
+template<class... BN>
+using enable_if_all_true_type_t = typename std::enable_if<all_true_type<BN...>::value>::type;
+
 struct all_values_true {
     template<class... ValueN>
     bool operator()(ValueN... vn) const;
@@ -97,8 +118,23 @@ struct all_values_true {
     }
 };
 
+struct any_value_true {
+    template<class... ValueN>
+    bool operator()(ValueN... vn) const;
+
+    template<class Value0>
+    bool operator()(Value0 v0) const {
+        return v0;
+    }
+
+    template<class Value0, class... ValueN>
+    bool operator()(Value0 v0, ValueN... vn) const {
+        return v0 || all_values_true()(vn...);
+    }
+};
+
 template<class... TN>
-struct types;
+struct types {};
 
 //
 // based on Walter Brown's void_t proposal
@@ -113,6 +149,21 @@ template<class... TN> struct types_checked_from {typedef types_checked type;};
 
 template<class... TN>
 struct types_checked_from {typedef typename detail::types_checked_from<TN...>::type type;};
+
+template<class... TN>
+using types_checked_t = typename types_checked_from<TN...>::type;
+
+
+template<class Types, class =types_checked>
+struct expand_value_types { struct type; };
+template<class... TN>
+struct expand_value_types<types<TN...>, types_checked_t<typename std::decay<TN>::type::value_type...>> 
+{
+    using type = types<typename std::decay<TN>::type::value_type...>;
+};
+template<class... TN>
+using value_types_t = typename expand_value_types<types<TN...>>::type;
+
 
 template<class T, class C = types_checked>
 struct value_type_from : public std::false_type {typedef types_checked type;};
@@ -212,6 +263,31 @@ struct pack
 inline auto pack()
     ->      detail::pack {
     return  detail::pack();
+}
+
+namespace detail {
+
+template<int Index>
+struct take_at
+{
+    template<class... ParamN>
+    auto operator()(ParamN... pn)
+        -> typename std::tuple_element<Index, std::tuple<decay_t<ParamN>...>>::type {
+        return                std::get<Index>(std::make_tuple(std::move(pn)...));
+    }
+    template<class... ParamN>
+    auto operator()(ParamN... pn) const
+        -> typename std::tuple_element<Index, std::tuple<decay_t<ParamN>...>>::type {
+        return                std::get<Index>(std::make_tuple(std::move(pn)...));
+    }
+};
+
+}
+
+template<int Index>
+inline auto take_at()
+    ->      detail::take_at<Index> {
+    return  detail::take_at<Index>();
 }
 
 template <class D>
@@ -328,6 +404,21 @@ struct less
     auto operator()(LHS&& lhs, RHS&& rhs) const
         -> decltype(std::forward<LHS>(lhs) < std::forward<RHS>(rhs))
         { return std::forward<LHS>(lhs) < std::forward<RHS>(rhs); }
+};
+
+template<class T = void>
+struct equal_to
+{
+    bool operator()(const T& lhs, const T& rhs) const { return lhs == rhs; }
+};
+
+template<>
+struct equal_to<void>
+{
+    template<class LHS, class RHS>
+    auto operator()(LHS&& lhs, RHS&& rhs) const
+    -> decltype(std::forward<LHS>(lhs) == std::forward<RHS>(rhs))
+    { return std::forward<LHS>(lhs) == std::forward<RHS>(rhs); }
 };
 
 namespace detail {
@@ -498,29 +589,29 @@ public:
     }
 
     T* operator->() {
-        if (!is_set) abort();
+        if (!is_set) std::terminate();
         return reinterpret_cast<T*>(&storage);
     }
     const T* operator->() const {
-        if (!is_set) abort();
+        if (!is_set) std::terminate();
         return reinterpret_cast<T*>(&storage);
     }
 
     T& operator*() {
-        if (!is_set) abort();
+        if (!is_set) std::terminate();
         return *reinterpret_cast<T*>(&storage);
     }
     const T& operator*() const {
-        if (!is_set) abort();
+        if (!is_set) std::terminate();
         return *reinterpret_cast<T*>(&storage);
     }
 
     T& get() {
-        if (!is_set) abort();
+        if (!is_set) std::terminate();
         return *reinterpret_cast<T*>(&storage);
     }
     const T& get() const {
-        if (!is_set) abort();
+        if (!is_set) std::terminate();
         return *reinterpret_cast<const T*>(&storage);
     }
 
@@ -578,22 +669,6 @@ inline auto surely(const std::tuple<T...>& tpl)
     -> decltype(apply(tpl, detail::surely())) {
     return      apply(tpl, detail::surely());
 }
-
-struct list_not_empty {
-    template<class T>
-    bool operator()(std::list<T>& list) const {
-        return !list.empty();
-    }
-};
-
-struct extract_list_front {
-    template<class T>
-    T operator()(std::list<T>& list) const {
-        auto val = std::move(list.front());
-        list.pop_front();
-        return val;
-    }
-};
 
 namespace detail {
 
@@ -674,26 +749,89 @@ public:
 };
 #endif
 
+template<typename, typename C = types_checked>
+struct is_string : std::false_type {
+};
+
+template <typename T>
+struct is_string<T, 
+    typename types_checked_from<
+        typename T::value_type,
+        typename T::traits_type,
+        typename T::allocator_type>::type>
+    : std::is_base_of<
+            std::basic_string<
+                typename T::value_type,
+                typename T::traits_type,
+                typename T::allocator_type>, T> {
+};
+
+namespace detail {
+
+    template <class T, class = types_checked>
+    struct is_duration : std::false_type {};
+
+    template <class T>
+    struct is_duration<T, types_checked_t<T, typename T::rep, typename T::period>>
+            : std::is_convertible<T*, std::chrono::duration<typename T::rep, typename T::period>*> {};
+
+}
+
+template <class T, class Decayed = decay_t<T>>
+struct is_duration : detail::is_duration<Decayed> {};
+
 }
 namespace rxu=util;
 
+
 //
 // due to an noisy static_assert issue in more than one std lib impl, 
-// build a whitelist filter for the types that are allowed to be hashed 
-// in rxcpp. this allows is_hashable<T> to work.
+// rxcpp maintains a whitelist filter for the types that are allowed 
+// to be hashed. this allows is_hashable<T> to work.
 //
 // NOTE: this should eventually be removed!
 //
 template <class T, typename = void> 
 struct filtered_hash;
+
+#if RXCPP_HASH_ENUM
 template <class T> 
 struct filtered_hash<T, typename std::enable_if<std::is_enum<T>::value>::type> : std::hash<T> {
 };
+#elif RXCPP_HASH_ENUM_UNDERLYING
+template <class T> 
+struct filtered_hash<T, typename std::enable_if<std::is_enum<T>::value>::type> : std::hash<typename std::underlying_type<T>::type> {
+};
+#endif
+
 template <class T> 
 struct filtered_hash<T, typename std::enable_if<std::is_integral<T>::value>::type> : std::hash<T> {
 };
 template <class T> 
 struct filtered_hash<T, typename std::enable_if<std::is_pointer<T>::value>::type> : std::hash<T> {
+};
+template <class T> 
+struct filtered_hash<T, typename std::enable_if<rxu::is_string<T>::value>::type> : std::hash<T> {
+};
+template <class T>
+struct filtered_hash<T, typename std::enable_if<std::is_convertible<T, std::chrono::duration<typename T::rep, typename T::period>>::value>::type> {
+    using argument_type = T;
+    using result_type = std::size_t;
+
+    result_type operator()(argument_type const & dur) const
+    {
+        return std::hash<typename argument_type::rep>{}(dur.count());
+    }
+};
+template <class T>
+struct filtered_hash<T, typename std::enable_if<std::is_convertible<T, std::chrono::time_point<typename T::clock, typename T::duration>>::value>::type> {
+    using argument_type = T;
+    using result_type = std::size_t;
+
+    result_type operator()(argument_type const & tp) const
+    {
+        return std::hash<typename argument_type::rep>{}(tp.time_since_epoch().count());
+    }
 };
 
 template<typename, typename C = rxu::types_checked>

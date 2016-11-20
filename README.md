@@ -1,39 +1,143 @@
-Windows: [![Windows Status](http://img.shields.io/appveyor/ci/kirkshoop/RxCpp-446.svg?style=flat-square)](https://ci.appveyor.com/project/kirkshoop/rxcpp-446)
+The Reactive Extensions for Native (__RxCpp__) is a library for composing asynchronous and event-based programs using observable sequences and LINQ-style query operators in C++.
 
-Linux & OSX: [![Linux & Osx Status](http://img.shields.io/travis/Reactive-Extensions/RxCpp.svg?style=flat-square)](https://travis-ci.org/Reactive-Extensions/RxCpp)
+Platform    | Status | 
+----------- | :------------ |
+Windows | [![Windows Status](http://img.shields.io/appveyor/ci/kirkshoop/RxCpp-446.svg?style=flat-square)](https://ci.appveyor.com/project/kirkshoop/rxcpp-446)
+Linux & OSX | [![Linux & Osx Status](http://img.shields.io/travis/Reactive-Extensions/RxCpp.svg?style=flat-square)](https://travis-ci.org/Reactive-Extensions/RxCpp)
 
-[![NuGet version](http://img.shields.io/nuget/v/RxCpp.svg?style=flat-square)](http://www.nuget.org/packages/RxCpp/)
-[![NuGet downloads](http://img.shields.io/nuget/dt/RxCpp.svg?style=flat-square)](http://www.nuget.org/packages/RxCpp/)
+Source        | Badges |
+------------- | :--------------- |
+Github | [![GitHub license](https://img.shields.io/github/license/Reactive-Extensions/RxCpp.svg?style=flat-square)](https://github.com/Reactive-Extensions/RxCpp) <br/> [![GitHub release](https://img.shields.io/github/release/Reactive-Extensions/RxCpp.svg?style=flat-square)](https://github.com/Reactive-Extensions/RxCpp/releases) [![GitHub commits](https://img.shields.io/github/commits-since/Reactive-Extensions/RxCpp/v2.3.0.svg?style=flat-square)](https://github.com/Reactive-Extensions/RxCpp)
+Gitter.im | [![Join in on gitter.im](https://img.shields.io/gitter/room/Reactive-Extensions/RxCpp.svg?style=flat-square)](https://gitter.im/Reactive-Extensions/RxCpp?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+NuGet | [![NuGet version](http://img.shields.io/nuget/v/RxCpp.svg?style=flat-square)](http://www.nuget.org/packages/RxCpp/)
+Documentation | [![rxcpp doxygen documentation](https://img.shields.io/badge/rxcpp-latest-brightgreen.svg?style=flat-square)](http://reactive-extensions.github.io/RxCpp) <br/> [![reactivex intro](https://img.shields.io/badge/reactivex.io-intro-brightgreen.svg?style=flat-square)](http://reactivex.io/intro.html) [![rx marble diagrams](https://img.shields.io/badge/rxmarbles-diagrams-brightgreen.svg?style=flat-square)](http://rxmarbles.com/)
 
-[doxygen documentation](http://reactive-extensions.github.io/RxCpp)
+#Example
+Add ```Rx/v2/src``` to the include paths
 
-[![Join in on gitter.im](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/Reactive-Extensions/RxCpp?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+[![lines from bytes](https://img.shields.io/badge/blog%20post-lines%20from%20bytes-blue.svg?style=flat-square)](http://kirkshoop.github.io/async/rxcpp/c++/2015/07/07/rxcpp_-_parsing_bytes_to_lines_of_text.html)
 
-# Reactive Extensions:
+```cpp
+#include "rxcpp/rx.hpp"
+using namespace rxcpp;
+using namespace rxcpp::sources;
+using namespace rxcpp::operators;
+using namespace rxcpp::util;
 
-* Rx.NET: The Reactive Extensions (Rx) is a library for composing asynchronous and event-based programs using observable sequences and LINQ-style query operators.
-* RxJS: The Reactive Extensions for JavaScript (RxJS) is a library for composing asynchronous and event-based programs using observable sequences and LINQ-style query operators in JavaScript which can target both the browser and Node.js.
-* RxCpp: The Reactive Extensions for Native (RxC) is a library for composing asynchronous and event-based programs using observable sequences and LINQ-style query operators in both C and C++.
+#include <regex>
+#include <random>
+using namespace std;
 
-# Interactive Extensions
-* Ix: The Interactive Extensions (Ix) is a .NET library which extends LINQ to Objects to provide many of the operators available in Rx but targeted for IEnumerable<T>.
-* IxJS: An implementation of LINQ to Objects and the Interactive Extensions (Ix) in JavaScript.
-* Ix++: An implantation of LINQ for Native Developers in C++
+int main()
+{
+    random_device rd;   // non-deterministic generator
+    mt19937 gen(rd());
+    uniform_int_distribution<> dist(4, 18);
 
-# Applications:
-* Tx: a set of code samples showing how to use LINQ to events, such as real-time standing queries and queries on past history from trace and log files, which targets ETW, Windows Event Logs and SQL Server Extended Events.
-* LINQ2Charts: an example for Rx bindings.  Similar to existing APIs like LINQ to XML, it allows developers to use LINQ to create/change/update charts in an easy way and avoid having to deal with XML or other underneath data structures. We would love to see more Rx bindings like this one.
+    // for testing purposes, produce byte stream that from lines of text
+    auto bytes = range(1, 10) |
+        flat_map([&](int i){
+            auto body = from((uint8_t)('A' + i)) |
+                repeat(dist(gen)) |
+                as_dynamic();
+            auto delim = from((uint8_t)'\r');
+            return from(body, delim) | concat();
+        }) |
+        window(17) |
+        flat_map([](observable<uint8_t> w){
+            return w |
+                reduce(
+                    vector<uint8_t>(),
+                    [](vector<uint8_t>& v, uint8_t b){
+                        v.push_back(b);
+                        return move(v);
+                    }) |
+                as_dynamic();
+        }) |
+        tap([](vector<uint8_t>& v){
+            // print input packet of bytes
+            copy(v.begin(), v.end(), ostream_iterator<long>(cout, " "));
+            cout << endl;
+        });
+
+    //
+    // recover lines of text from byte stream
+    //
+
+    // create strings split on \r
+    auto strings = bytes |
+        concat_map([](vector<uint8_t> v){
+            string s(v.begin(), v.end());
+            regex delim(R"/(\r)/");
+            sregex_token_iterator cursor(s.begin(), s.end(), delim, {-1, 0});
+            sregex_token_iterator end;
+            vector<string> splits(cursor, end);
+            return iterate(move(splits));
+        }) |
+        filter([](string& s){
+            return !s.empty();
+        });
+
+    // group strings by line
+    int group = 0;
+    auto linewindows = strings |
+        group_by(
+            [=](string& s) mutable {
+                return s.back() == '\r' ? group++ : group;
+            });
+
+    // reduce the strings for a line into one string
+    auto lines = linewindows |
+        flat_map([](grouped_observable<int, string> w){
+            return w | sum();
+        });
+
+    // print result
+    lines |
+        subscribe<string>(println(cout));
+
+    return 0;
+}
+```
+
+#Reactive Extensions
+
+>The ReactiveX Observable model allows you to treat streams of asynchronous events with the same sort of simple, composable operations that you use for collections of data items like arrays. It frees you from tangled webs of callbacks, and thereby makes your code more readable and less prone to bugs.
+
+Credit [ReactiveX.io](http://reactivex.io/intro.html)
+
+###Other language implementations
+
+* Java: [RxJava](https://github.com/ReactiveX/RxJava)
+* JavaScript: [RxJS](https://github.com/Reactive-Extensions/RxJS)
+* C#: [Rx.NET](https://github.com/Reactive-Extensions/Rx.NET)
+* [More..](http://reactivex.io/languages.html)
+
+###Resources
+
+* [Intro](http://reactivex.io/intro.html)
+* [Tutorials](http://reactivex.io/tutorials.html)
+* [Marble Diagrams](http://rxmarbles.com/)
+
+#Cloning RxCpp
+
+RxCpp uses a git submodule (in `ext/catch`) for the excellent [Catch](https://github.com/philsquared/Catch) library. The easiest way to ensure that the submodules are included in the clone is to add `--recursive` in the clone command.
+
+```shell
+git clone --recursive https://github.com/Reactive-Extensions/RxCpp.git
+cd RxCpp
+```
 
 #Building RxCpp
 
 * RxCpp is regularly tested on OSX and Windows.
-* RxCpp is regularly built with Clang and VC
+* RxCpp is regularly built with Clang, Gcc and VC
 * RxCpp depends on the latest compiler releases.
-* RxCpp has an experimental build with gcc.
 
 RxCpp uses CMake to create build files for several platforms and IDE's
 
-###Ide builds
+###ide builds
+
 ####XCode
 ```shell
 mkdir projects/build
@@ -41,13 +145,13 @@ cd projects/build
 cmake -G"Xcode" ../CMake -B.
 ```
 
-####Visual Studio 13
+####Visual Studio 2013
 ```batch
 mkdir projects\build
 cd projects\build
-cmake -G"Visual Studio 12" ..\CMake -B.
+cmake -G"Visual Studio 14" ..\CMake -B.
+msbuild rxcpp.sln
 ```
-* Note: open in VC2013 and upgrade to the 2013 toolset
 
 ###makefile builds
 
@@ -83,70 +187,22 @@ cmake -G"NMake Makefiles" -DCMAKE_BUILD_TYPE=RelWithDebInfo -B. ..\CMake
 nmake
 ```
 
-The build only produces a test binary.
+The build only produces test and example binaries.
 
 #Running tests
 
-* You can use the CMake test runner ```ctest```
-* You can run the test binary directly ```rxcppv2_test```
+* You can use the CMake test runner `ctest`
+* You can run the test binaries directly `rxcppv2_test_*`
 * Tests can be selected by name or tag
 Example of by-tag
 
-```rxcppv2_test [perf]```
-
-#Using RxCpp
-Add ```Rx/v2/src``` to the include paths
-
-```cpp
-#include "rxcpp/rx.hpp"
-// create alias' to simplify code
-// these are owned by the user so that
-// conflicts can be managed by the user.
-namespace rx=rxcpp;
-namespace rxu=rxcpp::util;
-namespace rxsc=rxcpp::schedulers;
-namespace rxsub=rxcpp::subjects;
-
-int main()
-{
-    int c = 0;
-
-    auto triples =
-        rx::observable<>::range(1)
-            .concat_map(
-                [&c](int z){
-                    return rx::observable<>::range(1, z)
-                        .concat_map(
-                            [=, &c](int x){
-                                return rx::observable<>::range(x, z)
-                                    .filter([=, &c](int y){++c; return x*x + y*y == z*z;})
-                                    .map([=](int y){return std::make_tuple(x, y, z);})
-                                    // forget type to workaround lambda deduction bug on msvc 2013
-                                    .as_dynamic();},
-                            [](int x, std::tuple<int,int,int> triplet){return triplet;})
-                        // forget type to workaround lambda deduction bug on msvc 2013
-                        .as_dynamic();},
-                [](int z, std::tuple<int,int,int> triplet){return triplet;});
-
-    int ct = 0;
-
-    triples
-        .take(100)
-        .subscribe(rxu::apply_to([&ct](int x,int y,int z){
-            ++ct;
-        }));
-
-    std::cout << "concat_map pythagorian range : " << c << " filtered to, " << ct << " triplets" << std::endl;
-
-    return 0;
-}
-```
+`rxcppv2_test_subscription [perf]`
 
 #Documentation
 
 RxCpp uses Doxygen to generate project [documentation](http://reactive-extensions.github.io/RxCpp).
 
-When Doxygen+Graphviz is installed, CMake creates a special build task named ```doc```. It creates actual documentation and puts it to ```projects/doxygen/html/``` folder, which can be published to the `gh-pages` branch.
+When Doxygen+Graphviz is installed, CMake creates a special build task named `doc`. It creates actual documentation and puts it to `projects/doxygen/html/` folder, which can be published to the `gh-pages` branch. Each merged pull request will build the docs and publish them.
 
 [Developers Material](DeveloperManual.md)
 
@@ -154,4 +210,4 @@ When Doxygen+Graphviz is installed, CMake creates a special build task named ```
 
 Before submitting a feature or substantial code contribution please  discuss it with the team and ensure it follows the product roadmap. Note that all code submissions will be rigorously reviewed and tested by the Rx Team, and only those that meet an extremely high bar for both quality and design/roadmap appropriateness will be merged into the source.
 
-You will be promted to submit a Contributor License Agreement form after submitting your pull request. This needs to only be done once for any Microsoft OSS project. Fill in the [Contributor License Agreement](https://cla2.msopentech.com/) (CLA).
+You will be prompted to submit a Contributor License Agreement form after submitting your pull request. This needs to only be done once for any Microsoft OSS project. Fill in the [Contributor License Agreement](https://cla2.msopentech.com/) (CLA).

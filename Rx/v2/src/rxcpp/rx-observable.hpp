@@ -17,22 +17,6 @@ namespace rxcpp {
 
 namespace detail {
 
-template<class Source, class F>
-struct is_operator_factory_for
-{
-    struct not_void {};
-    template<class CS, class CF>
-    static auto check(int) -> decltype((*(CF*)nullptr)(*(CS*)nullptr));
-    template<class CS, class CF>
-    static not_void check(...);
-
-    typedef rxu::decay_t<Source> source_type;
-    typedef rxu::decay_t<F> function_type;
-
-    typedef decltype(check<source_type, function_type>(0)) detail_result;
-    static const bool value = !std::is_same<detail_result, not_void>::value && is_observable<source_type>::value;
-};
-
 template<class Subscriber, class T>
 struct has_on_subscribe_for
 {
@@ -195,7 +179,7 @@ class blocking_observable
         {
             ~tracking()
             {
-                if (!disposed || !wakened) abort();
+                if (!disposed || !wakened) std::terminate();
             }
             tracking()
             {
@@ -253,7 +237,7 @@ class blocking_observable
                 return true;
             });
         track->wakened = true;
-        if (!track->disposed || !track->wakened) abort();
+        if (!track->disposed || !track->wakened) std::terminate();
 
         if (error) {std::rethrow_exception(error);}
     }
@@ -327,7 +311,8 @@ public:
         \snippet blocking_observable.cpp blocking first empty sample
         \snippet output.txt blocking first empty sample
     */
-    T first() {
+    template<class... AN>
+    auto first(AN**...) -> delayed_type_t<T, AN...> const {
         rxu::maybe<T> result;
         composite_subscription cs;
         subscribe_with_rethrow(
@@ -336,6 +321,7 @@ public:
         if (result.empty())
             throw rxcpp::empty_error("first() requires a stream with at least one value");
         return result.get();
+        static_assert(sizeof...(AN) == 0, "first() was passed too many arguments.");
     }
 
     /*! Return the last item emitted by this blocking_observable, or throw an std::runtime_error exception if it emits no items.
@@ -353,13 +339,15 @@ public:
         \snippet blocking_observable.cpp blocking last empty sample
         \snippet output.txt blocking last empty sample
     */
-    T last() const {
+    template<class... AN>
+    auto last(AN**...) -> delayed_type_t<T, AN...> const {
         rxu::maybe<T> result;
         subscribe_with_rethrow(
             [&](T v){result.reset(v);});
         if (result.empty())
             throw rxcpp::empty_error("last() requires a stream with at least one value");
         return result.get();
+        static_assert(sizeof...(AN) == 0, "last() was passed too many arguments.");
     }
 
     /*! Return the total number of items emitted by this blocking_observable.
@@ -466,6 +454,36 @@ public:
     }
 };
 
+namespace detail {
+    
+template<class SourceOperator, class Subscriber>
+struct safe_subscriber 
+{
+    safe_subscriber(SourceOperator& so, Subscriber& o) : so(std::addressof(so)), o(std::addressof(o)) {}
+
+    void subscribe() {
+        try {
+            so->on_subscribe(*o);
+        }
+        catch(...) {
+            if (!o->is_subscribed()) {
+                throw;
+            }
+            o->on_error(std::current_exception());
+            o->unsubscribe();
+        }
+    }
+
+    void operator()(const rxsc::schedulable&) {
+        subscribe();
+    }
+
+    SourceOperator* so;
+    Subscriber* o;
+};
+
+}
+
 template<>
 class observable<void, void>;
 
@@ -525,29 +543,15 @@ private:
             return o.get_subscription();
         }
 
-        auto safe_subscribe = [&]() {
-            try {
-                source_operator.on_subscribe(o);
-            }
-            catch(...) {
-                if (!o.is_subscribed()) {
-                    throw;
-                }
-                o.on_error(std::current_exception());
-                o.unsubscribe();
-            }
-        };
+        detail::safe_subscriber<source_operator_type, subscriber_type> subscriber(source_operator, o);
 
         // make sure to let current_thread take ownership of the thread as early as possible.
         if (rxsc::current_thread::is_schedule_required()) {
             const auto& sc = rxsc::make_current_thread();
-            sc.create_worker(o.get_subscription()).schedule(
-                [&](const rxsc::schedulable&) {
-                    safe_subscribe();
-                });
+            sc.create_worker(o.get_subscription()).schedule(subscriber);
         } else {
             // current_thread already owns this thread.
-            safe_subscribe();
+            subscriber.subscribe();
         }
 
         trace_activity().subscribe_return(*this);
@@ -604,8 +608,10 @@ public:
         \snippet as_dynamic.cpp as_dynamic sample
         \snippet output.txt as_dynamic sample
     */
-    observable<T> as_dynamic() const {
+    template<class... AN>
+    observable<T> as_dynamic(AN**...) const {
         return *this;
+        static_assert(sizeof...(AN) == 0, "as_dynamic() was passed too many arguments.");
     }
 
     /*! Return a new observable that contains the blocking methods for this observable.
@@ -616,8 +622,10 @@ public:
         \snippet from.cpp threaded from sample
         \snippet output.txt threaded from sample
     */
-    blocking_observable<T, this_type> as_blocking() const {
+    template<class... AN>
+    blocking_observable<T, this_type> as_blocking(AN**...) const {
         return blocking_observable<T, this_type>(*this);
+        static_assert(sizeof...(AN) == 0, "as_blocking() was passed too many arguments.");
     }
 
     /// \cond SHOW_SERVICE_MEMBERS
@@ -631,7 +639,7 @@ public:
     auto op(OperatorFactory&& of) const
         -> decltype(of(*(const this_type*)nullptr)) {
         return      of(*this);
-        static_assert(detail::is_operator_factory_for<this_type, OperatorFactory>::value, "Function passed for op() must have the signature Result(SourceObservable)");
+        static_assert(is_operator_factory_for<this_type, OperatorFactory>::value, "Function passed for op() must have the signature Result(SourceObservable)");
     }
 
     ///
@@ -723,25 +731,226 @@ public:
         return detail_subscribe(make_subscriber<T>(std::forward<ArgN>(an)...));
     }
 
-    /*! For each item from this observable use Predicate to select which items to emit from the new observable that is returned.
+    /*! Returns an Observable that emits true if every item emitted by the source Observable satisfies a specified condition, otherwise false.
+        Emits true if the source Observable terminates without emitting any item.
 
-        \tparam Predicate  the type of the filter function
+        \tparam Predicate  the type of the test function.
 
-        \param p  the filter function
+        \param p  the test function to test items emitted by the source Observable.
 
-        \return  Observable that emits only those items emitted by the source observable that the filter evaluates as true.
+        \return  Observable that emits true if every item emitted by the source observable satisfies a specified condition, otherwise false.
 
         \sample
-        \snippet filter.cpp filter sample
-        \snippet output.txt filter sample
+        \snippet all.cpp all sample
+        \snippet output.txt all sample
     */
     template<class Predicate>
-    auto filter(Predicate p) const
+    auto all(Predicate p) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift<T>(rxo::detail::filter<T, Predicate>(std::move(p))))
+        -> decltype(EXPLICIT_THIS lift<bool>(rxo::detail::all<T, Predicate>(std::move(p))))
         /// \endcond
     {
-        return                    lift<T>(rxo::detail::filter<T, Predicate>(std::move(p)));
+        return                    lift<bool>(rxo::detail::all<T, Predicate>(std::move(p)));
+    }
+
+    /*! Returns an Observable that emits true if any item emitted by the source Observable satisfies a specified condition, otherwise false.
+        Emits false if the source Observable terminates without emitting any item.
+
+        \tparam Predicate  the type of the test function.
+
+        \param p  the test function to test items emitted by the source Observable.
+
+        \return  Observable that emits true if any item emitted by the source observable satisfies a specified condition, otherwise false.
+
+        \sample
+        \snippet exists.cpp exists sample
+        \snippet output.txt exists sample
+    */
+    template<class Predicate>
+    auto exists(Predicate p) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS lift<bool>(rxo::detail::any<T, Predicate>(std::move(p))))
+        /// \endcond
+    {
+        return                    lift<bool>(rxo::detail::any<T, Predicate>(std::move(p)));
+    }
+
+    // workaround for - rx-observable.hpp(799): error C2066: cast to function type is illegal 
+    // 799 was: decltype(EXPLICIT_THIS lift<bool>(rxo::detail::any<T, std::function<bool(T)>>(std::function<bool(T)>{})))
+    typedef std::function<bool(T)> boolFromT;
+
+    /*! Returns an Observable that emits true if the source Observable emitted a specified item, otherwise false.
+        Emits false if the source Observable terminates without emitting any item.
+
+        \param value  the item to search for.
+
+        \return  Observable that emits true if the source Observable emitted a specified item, otherwise false.
+
+        \sample
+        \snippet contains.cpp contains sample
+        \snippet output.txt contains sample
+    */
+    template<class... AN>
+    auto contains(T value, AN**...) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS lift<bool>(rxo::detail::any<T, boolFromT>(nullptr)))
+        /// \endcond
+    {
+        return                    lift<bool>(rxo::detail::any<T, boolFromT>([value](T n) { return n == value; }));
+        static_assert(sizeof...(AN) == 0, "contains(value) was passed too many arguments.");
+    }
+
+    /*! @copydoc rx-filter.hpp
+     */
+    template<class... AN>
+    auto filter(AN&&... an) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(observable_member(filter_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
+    /// \endcond
+    {
+        return  observable_member(filter_tag{}, *this,                std::forward<AN>(an)...);
+    }
+
+    /*! If the source Observable terminates without emitting any items, emits items from a backup Observable.
+
+        \tparam BackupSource  the type of the backup observable.
+
+        \param t  a backup observable that is used if the source observable is empty.
+
+        \return  Observable that emits items from a backup observable if the source observable is empty.
+
+        \sample
+        \snippet switch_if_empty.cpp switch_if_empty sample
+        \snippet output.txt switch_if_empty sample
+    */
+    template<class BackupSource>
+    auto switch_if_empty(BackupSource t) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> typename std::enable_if<is_observable<BackupSource>::value,
+            decltype(EXPLICIT_THIS lift<T>(rxo::detail::switch_if_empty<T, BackupSource>(std::move(t))))>::type
+    /// \endcond
+    {
+        return                    lift<T>(rxo::detail::switch_if_empty<T, BackupSource>(std::move(t)));
+    }
+
+    /*! If the source Observable terminates without emitting any items, emits a default item and completes.
+
+        \tparam V  the type of the value to emit.
+
+        \param v  the default value to emit
+
+        \return  Observable that emits the specified default item if the source observable is empty.
+
+        \sample
+        \snippet default_if_empty.cpp default_if_empty sample
+        \snippet output.txt default_if_empty sample
+    */
+    template <typename V>
+    auto default_if_empty(V v) const
+      -> decltype(EXPLICIT_THIS switch_if_empty(rxs::from(std::move(v))))
+    {
+        return                  switch_if_empty(rxs::from(std::move(v)));
+    }
+
+    /*! Determine whether two Observables emit the same sequence of items.
+
+        \tparam OtherSource      the type of the other observable.
+        \tparam BinaryPredicate  the type of the value comparing function. The signature should be equivalent to the following: bool pred(const T1& a, const T2& b);
+        \tparam Coordination  the type of the scheduler.
+
+        \param t     the other Observable that emits items to compare.
+        \param pred  the function that implements comparison of two values.
+        \param cn    the scheduler.
+
+        \return  Observable that emits true only if both sequences terminate normally after emitting the same sequence of items in the same order; otherwise it will emit false.
+
+        \sample
+        \snippet sequence_equal.cpp sequence_equal sample
+        \snippet output.txt sequence_equal sample
+    */
+    template<class OtherSource, class BinaryPredicate, class Coordination>
+    auto sequence_equal(OtherSource&& t, BinaryPredicate&& pred, Coordination&& cn) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> typename std::enable_if<is_observable<OtherSource>::value,
+                observable<bool, rxo::detail::sequence_equal<T, this_type, OtherSource, BinaryPredicate, Coordination>>>::type
+    /// \endcond
+    {
+        return  observable<bool, rxo::detail::sequence_equal<T, this_type, OtherSource, BinaryPredicate, Coordination>>(
+                rxo::detail::sequence_equal<T, this_type, OtherSource, BinaryPredicate, Coordination>(*this, std::forward<OtherSource>(t), std::forward<BinaryPredicate>(pred), std::forward<Coordination>(cn)));
+    }
+
+
+    /*! Determine whether two Observables emit the same sequence of items.
+
+        \tparam OtherSource      the type of the other observable.
+        \tparam BinaryPredicate  the type of the value comparing function. The signature should be equivalent to the following: bool pred(const T1& a, const T2& b);
+
+        \param t     the other Observable that emits items to compare.
+        \param pred  the function that implements comparison of two values.
+
+        \return  Observable that emits true only if both sequences terminate normally after emitting the same sequence of items in the same order; otherwise it will emit false.
+
+        \sample
+        \snippet sequence_equal.cpp sequence_equal sample
+        \snippet output.txt sequence_equal sample
+    */
+    template<class OtherSource, class BinaryPredicate>
+    auto sequence_equal(OtherSource&& t, BinaryPredicate&& pred) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> typename std::enable_if<is_observable<OtherSource>::value && !is_coordination<BinaryPredicate>::value,
+                observable<bool, rxo::detail::sequence_equal<T, this_type, OtherSource, BinaryPredicate, identity_one_worker>>>::type
+    /// \endcond
+    {
+        return  observable<bool, rxo::detail::sequence_equal<T, this_type, OtherSource, BinaryPredicate, identity_one_worker>>(
+                rxo::detail::sequence_equal<T, this_type, OtherSource, BinaryPredicate, identity_one_worker>(*this, std::forward<OtherSource>(t), std::forward<BinaryPredicate>(pred), identity_one_worker(rxsc::make_current_thread())));
+    }
+
+    /*! Determine whether two Observables emit the same sequence of items.
+
+        \tparam OtherSource   the type of the other observable.
+        \tparam Coordination  the type of the scheduler.
+
+        \param t  the other Observable that emits items to compare.
+        \param cn the scheduler.
+
+        \return  Observable that emits true only if both sequences terminate normally after emitting the same sequence of items in the same order; otherwise it will emit false.
+
+        \sample
+        \snippet sequence_equal.cpp sequence_equal sample
+        \snippet output.txt sequence_equal sample
+    */
+    template<class OtherSource, class Coordination>
+    auto sequence_equal(OtherSource&& t, Coordination&& cn) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> typename std::enable_if<is_observable<OtherSource>::value && is_coordination<Coordination>::value,
+                observable<bool, rxo::detail::sequence_equal<T, this_type, OtherSource, rxu::equal_to<>, Coordination>>>::type
+    /// \endcond
+    {
+        return  observable<bool, rxo::detail::sequence_equal<T, this_type, OtherSource, rxu::equal_to<>, Coordination>>(
+                rxo::detail::sequence_equal<T, this_type, OtherSource, rxu::equal_to<>, Coordination>(*this, std::forward<OtherSource>(t), rxu::equal_to<>(), std::forward<Coordination>(cn)));
+    }
+
+    /*! Determine whether two Observables emit the same sequence of items.
+
+        \tparam OtherSource  the type of the other observable.
+
+        \param t  the other Observable that emits items to compare.
+
+        \return  Observable that emits true only if both sequences terminate normally after emitting the same sequence of items in the same order; otherwise it will emit false.
+
+        \sample
+        \snippet sequence_equal.cpp sequence_equal sample
+        \snippet output.txt sequence_equal sample
+    */
+    template<class OtherSource>
+    auto sequence_equal(OtherSource&& t) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> typename std::enable_if<is_observable<OtherSource>::value,
+                observable<bool, rxo::detail::sequence_equal<T, this_type, OtherSource, rxu::equal_to<>, identity_one_worker>>>::type
+    /// \endcond
+    {
+        return  observable<bool, rxo::detail::sequence_equal<T, this_type, OtherSource, rxu::equal_to<>, identity_one_worker>>(
+                rxo::detail::sequence_equal<T, this_type, OtherSource, rxu::equal_to<>, identity_one_worker>(*this, std::forward<OtherSource>(t), rxu::equal_to<>(), identity_one_worker(rxsc::make_current_thread())));
     }
 
     /*! inspect calls to on_next, on_error and on_completed.
@@ -750,9 +959,9 @@ public:
 
         \param an  these args are passed to make_observer.
 
-        \return  Observable that emits the same items as the source observable to both the subscriber and the observer. 
+        \return  Observable that emits the same items as the source observable to both the subscriber and the observer.
 
-        \note If an on_error method is not supplied the observer will ignore errors rather than call std::abort()
+        \note If an on_error method is not supplied the observer will ignore errors rather than call std::terminate()
 
         \sample
         \snippet tap.cpp tap sample
@@ -769,6 +978,132 @@ public:
         /// \endcond
     {
         return                    lift<T>(rxo::detail::tap<T, std::tuple<MakeObserverArgN...>>(std::make_tuple(std::forward<MakeObserverArgN>(an)...)));
+    }
+
+    /*! Returns an observable that emits indications of the amount of time lapsed between consecutive emissions of the source observable.
+        The first emission from this new Observable indicates the amount of time lapsed between the time when the observer subscribed to the Observable and the time when the source Observable emitted its first item.
+
+        \tparam Coordination  the type of the scheduler
+
+        \param coordination  the scheduler for itme intervals
+
+        \return  Observable that emits a time_duration to indicate the amount of time lapsed between pairs of emissions.
+
+        \sample
+        \snippet time_interval.cpp time_interval sample
+        \snippet output.txt time_interval sample
+    */
+    template<class Coordination>
+    auto time_interval(Coordination coordination) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(EXPLICIT_THIS lift<rxsc::scheduler::clock_type::time_point::duration>(rxo::detail::time_interval<T, Coordination>{coordination}))
+    /// \endcond
+    {
+        return                lift<rxsc::scheduler::clock_type::time_point::duration>(rxo::detail::time_interval<T, Coordination>{coordination});
+    }
+
+    /*! Returns an observable that emits indications of the amount of time lapsed between consecutive emissions of the source observable.
+        The first emission from this new Observable indicates the amount of time lapsed between the time when the observer subscribed to the Observable and the time when the source Observable emitted its first item.
+
+        \return  Observable that emits a time_duration to indicate the amount of time lapsed between pairs of emissions.
+
+        \sample
+        \snippet time_interval.cpp time_interval sample
+        \snippet output.txt time_interval sample
+    */
+    template<class... AN>
+    auto time_interval(AN**...) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(EXPLICIT_THIS lift<rxsc::scheduler::clock_type::time_point::duration>(rxo::detail::time_interval<T, identity_one_worker>{identity_current_thread()}))
+    /// \endcond
+    {
+        return                lift<rxsc::scheduler::clock_type::time_point::duration>(rxo::detail::time_interval<T, identity_one_worker>{identity_current_thread()});
+        static_assert(sizeof...(AN) == 0, "time_interval() was passed too many arguments.");
+    }
+
+    /*! Return an observable that terminates with timeout_error if a particular timespan has passed without emitting another item from the source observable.
+
+        \tparam Duration      the type of time interval
+        \tparam Coordination  the type of the scheduler
+
+        \param period        the period of time wait for another item from the source observable.
+        \param coordination  the scheduler to manage timeout for each event
+
+        \return  Observable that terminates with an error if a particular timespan has passed without emitting another item from the source observable.
+
+        \sample
+        \snippet timeout.cpp timeout sample
+        \snippet output.txt timeout sample
+    */
+    template<class Duration, class Coordination>
+    auto timeout(Duration period, Coordination coordination) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS lift<T>(rxo::detail::timeout<T, Duration, Coordination>(period, coordination)))
+        /// \endcond
+    {
+        return                    lift<T>(rxo::detail::timeout<T, Duration, Coordination>(period, coordination));
+    }
+
+    /*! Return an observable that terminates with timeout_error if a particular timespan has passed without emitting another item from the source observable.
+
+        \tparam Duration      the type of time interval
+
+        \param period        the period of time wait for another item from the source observable.
+
+        \return  Observable that terminates with an error if a particular timespan has passed without emitting another item from the source observable.
+
+        \sample
+        \snippet timeout.cpp timeout sample
+        \snippet output.txt timeout sample
+    */
+    template<class Duration>
+    auto timeout(Duration period) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS lift<T>(rxo::detail::timeout<T, Duration, identity_one_worker>(period, identity_current_thread())))
+        /// \endcond
+    {
+        return                    lift<T>(rxo::detail::timeout<T, Duration, identity_one_worker>(period, identity_current_thread()));
+    }
+
+    /*! Returns an observable that attaches a timestamp to each item emitted by the source observable indicating when it was emitted.
+
+        \tparam Coordination  the type of the scheduler
+
+        \param coordination  the scheduler to manage timeout for each event
+
+        \return  Observable that emits a pair: { item emitted by the source observable, time_point representing the current value of the clock }.
+
+        \sample
+        \snippet timestamp.cpp timestamp sample
+        \snippet output.txt timestamp sample
+    */
+    template<class Coordination>
+    auto timestamp(Coordination coordination) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(EXPLICIT_THIS lift<std::pair<T, rxsc::scheduler::clock_type::time_point>>(rxo::detail::timestamp<T, Coordination>{coordination}))
+    /// \endcond
+    {
+        return                lift<std::pair<T, rxsc::scheduler::clock_type::time_point>>(rxo::detail::timestamp<T, Coordination>{coordination});
+    }
+
+    /*! Returns an observable that attaches a timestamp to each item emitted by the source observable indicating when it was emitted.
+
+        \tparam ClockType    the type of the clock to return a time_point.
+
+        \return  Observable that emits a pair: { item emitted by the source observable, time_point representing the current value of the clock }.
+
+        \sample
+        \snippet timestamp.cpp timestamp sample
+        \snippet output.txt timestamp sample
+    */
+    template<class... AN>
+    auto timestamp(AN**...) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(EXPLICIT_THIS lift<std::pair<T, rxsc::scheduler::clock_type::time_point>>(rxo::detail::timestamp<T, identity_one_worker>{identity_current_thread()}))
+    /// \endcond
+    {
+        return                lift<std::pair<T, rxsc::scheduler::clock_type::time_point>>(rxo::detail::timestamp<T, identity_one_worker>{identity_current_thread()});
+        static_assert(sizeof...(AN) == 0, "timestamp() was passed too many arguments.");
     }
 
     /*! Add a new action at the end of the new observable that is returned.
@@ -838,98 +1173,59 @@ public:
         return                    lift<rxu::value_type_t<rxo::detail::map<T, Selector>>>(rxo::detail::map<T, Selector>(std::move(s)));
     }
 
-    /*! Return an observable that emits each item emitted by the source observable after the specified delay.
-
-        \tparam Duration      the type of time interval
-        \tparam Coordination  the type of the scheduler
-
-        \param period        the period of time each item is delayed
-        \param coordination  the scheduler for the delays
-
-        \return  Observable that emits each item emitted by the source observable after the specified delay.
-
-        \sample
-        \snippet delay.cpp delay period+coordination sample
-        \snippet output.txt delay period+coordination sample
-    */
-    template<class Duration, class Coordination>
-    auto delay(Duration period, Coordination coordination) const
-        /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift<T>(rxo::detail::delay<T, Duration, Coordination>(period, coordination)))
-        /// \endcond
+    /*! @copydoc rx-debounce.hpp
+     */
+    template<class... AN>
+    auto debounce(AN&&... an) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(observable_member(debounce_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
+    /// \endcond
     {
-        return                    lift<T>(rxo::detail::delay<T, Duration, Coordination>(period, coordination));
+        return  observable_member(debounce_tag{},                *this, std::forward<AN>(an)...);
     }
 
-    /*! Return an observable that emits each item emitted by the source observable after the specified delay.
-
-        \tparam Duration      the type of time interval
-
-        \param period        the period of time each item is delayed
-
-        \return  Observable that emits each item emitted by the source observable after the specified delay.
-
-        \sample
-        \snippet delay.cpp delay period sample
-        \snippet output.txt delay period sample
-    */
-    template<class Duration>
-    auto delay(Duration period) const
-        /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift<T>(rxo::detail::delay<T, Duration, identity_one_worker>(period, identity_current_thread())))
-        /// \endcond
+    /*! @copydoc rx-debounce.hpp
+     */
+    template<class... AN>
+    auto delay(AN&&... an) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(observable_member(delay_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
+    /// \endcond
     {
-        return                    lift<T>(rxo::detail::delay<T, Duration, identity_one_worker>(period, identity_current_thread()));
-    }
-       
-    /*! For each item from this observable, filter out repeated values and emit only items that have not already been emitted.
-
-        \return  Observable that emits those items from the source observable that are distinct.
-
-        \sample
-        \snippet distinct.cpp distinct sample
-        \snippet output.txt distinct sample
-    */
-    auto distinct() const
-        /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift<T>(rxo::detail::distinct<T>()))
-        /// \endcond
-    {
-        return                    lift<T>(rxo::detail::distinct<T>());
+        return  observable_member(delay_tag{},                *this, std::forward<AN>(an)...);
     }
 
-    /*! For each item from this observable, filter out consequentially repeated values and emit only changes from the new observable that is returned.
-
-        \return  Observable that emits those items from the source observable that are distinct from their immediate predecessors.
-
-        \sample
-        \snippet distinct_until_changed.cpp distinct_until_changed sample
-        \snippet output.txt distinct_until_changed sample
-    */
-    auto distinct_until_changed() const
-        /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift<T>(rxo::detail::distinct_until_changed<T>()))
-        /// \endcond
+    /*! @copydoc rx-distinct.hpp
+     */
+    template<class... AN>
+    auto distinct(AN&&... an) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(observable_member(distinct_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
+    /// \endcond
     {
-        return                    lift<T>(rxo::detail::distinct_until_changed<T>());
+        return  observable_member(distinct_tag{},                *this, std::forward<AN>(an)...);
     }
 
-    /*! Pulls an item located at a specified index location in the sequence of items and emits that item as its own sole emission.
-
-        \param  index  the index of the element to return.
-
-        \return  An observable that emit an item located at a specified index location.
-
-        \sample
-        \snippet element_at.cpp element_at sample
-        \snippet output.txt element_at sample
-    */
-    auto element_at(int index) const
-        /// \cond SHOW_SERVICE_MEMBERS
-        ->      decltype(EXPLICIT_THIS lift<T>(rxo::detail::element_at<T>(index)))
-        /// \endcond
+    /*! @copydoc rx-distinct_until_changed.hpp
+     */
+    template<class... AN>
+    auto distinct_until_changed(AN&&... an) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(observable_member(distinct_until_changed_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
+    /// \endcond
     {
-        return                    lift<T>(rxo::detail::element_at<T>(index));
+        return  observable_member(distinct_until_changed_tag{},                *this, std::forward<AN>(an)...);
+    }
+
+    /*! @copydoc rx-element_at.hpp
+     */
+    template<class... AN>
+    auto element_at(AN&&... an) const
+    /// \cond SHOW_SERVICE_MEMBERS
+    -> decltype(observable_member(element_at_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
+    /// \endcond
+    {
+        return  observable_member(element_at_tag{},                *this, std::forward<AN>(an)...);
     }
 
     /*! Return an observable that emits connected, non-overlapping windows, each containing at most count items from the source observable.
@@ -942,12 +1238,14 @@ public:
         \snippet window.cpp window count sample
         \snippet output.txt window count sample
     */
-    auto window(int count) const
+    template<class... AN>
+    auto window(int count, AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS lift<observable<T>>(rxo::detail::window<T>(count, count)))
         /// \endcond
     {
         return                    lift<observable<T>>(rxo::detail::window<T>(count, count));
+        static_assert(sizeof...(AN) == 0, "window(count) was passed too many arguments.");
     }
 
     /*! Return an observable that emits windows every skip items containing at most count items from the source observable.
@@ -961,12 +1259,14 @@ public:
         \snippet window.cpp window count+skip sample
         \snippet output.txt window count+skip sample
     */
-    auto window(int count, int skip) const
+    template<class... AN>
+    auto window(int count, int skip, AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS lift<observable<T>>(rxo::detail::window<T>(count, skip)))
         /// \endcond
     {
         return                    lift<observable<T>>(rxo::detail::window<T>(count, skip));
+        static_assert(sizeof...(AN) == 0, "window(count, skip) was passed too many arguments.");
     }
 
     /*! Return an observable that emits observables every skip time interval and collects items from this observable for period of time into each produced observable, on the specified scheduler.
@@ -1105,6 +1405,54 @@ public:
         return                    lift<observable<T>>(rxo::detail::window_with_time_or_count<T, Duration, identity_one_worker>(period, count, identity_current_thread()));
     }
 
+    /*! Return an observable that emits observables every period time interval and collects items from this observable for period of time into each produced observable, on the specified scheduler.
+
+        \tparam Openings        observable<OT>
+        \tparam ClosingSelector a function of type observable<CT>(OT)
+        \tparam Coordination    the type of the scheduler
+
+        \param opens         each value from this observable opens a new window.
+        \param closes        this function is called for each opened window and returns an observable. the first value from the returned observable will close the window
+        \param coordination  the scheduler for the windows
+
+        \return  Observable that emits an observable for each opened window.
+
+        \sample
+        \snippet window.cpp window toggle+coordination sample
+        \snippet output.txt window toggle+coordination sample
+    */
+    template<class Openings, class ClosingSelector, class Coordination, class Reqiures = typename rxu::types_checked_from<typename Coordination::coordination_tag>::type>
+    auto window_toggle(Openings opens, ClosingSelector closes, Coordination coordination) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS lift<observable<T>>(rxo::detail::window_toggle<T, Openings, ClosingSelector, Coordination>(opens, closes, coordination)))
+        /// \endcond
+    {
+        return                    lift<observable<T>>(rxo::detail::window_toggle<T, Openings, ClosingSelector, Coordination>(opens, closes, coordination));
+    }
+
+    /*! Return an observable that emits connected, non-overlapping windows represending items emitted by the source observable during fixed, consecutive durations.
+
+        \tparam Openings        observable<OT>
+        \tparam ClosingSelector a function of type observable<CT>(OT)
+
+        \param opens         each value from this observable opens a new window.
+        \param closes        this function is called for each opened window and returns an observable. the first value from the returned observable will close the window
+
+        \return  Observable that emits an observable for each opened window.
+
+        \sample
+        \snippet window.cpp window toggle sample
+        \snippet output.txt window toggle sample
+    */
+    template<class Openings, class ClosingSelector>
+    auto window_toggle(Openings opens, ClosingSelector closes) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS lift<observable<T>>(rxo::detail::window_toggle<T, Openings, ClosingSelector, identity_one_worker>(opens, closes, identity_current_thread())))
+        /// \endcond
+    {
+        return                    lift<observable<T>>(rxo::detail::window_toggle<T, Openings, ClosingSelector, identity_one_worker>(opens, closes, identity_current_thread()));
+    }
+
     /*! Return an observable that emits connected, non-overlapping buffer, each containing at most count items from the source observable.
 
         \param count  the maximum size of each buffer before it should be emitted
@@ -1115,12 +1463,14 @@ public:
         \snippet buffer.cpp buffer count sample
         \snippet output.txt buffer count sample
     */
-    auto buffer(int count) const
+    template<class... AN>
+    auto buffer(int count, AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS lift_if<std::vector<T>>(rxo::detail::buffer_count<T>(count, count)))
         /// \endcond
     {
         return                    lift_if<std::vector<T>>(rxo::detail::buffer_count<T>(count, count));
+        static_assert(sizeof...(AN) == 0, "buffer(count) was passed too many arguments.");
     }
 
     /*! Return an observable that emits buffers every skip items containing at most count items from the source observable.
@@ -1134,12 +1484,14 @@ public:
         \snippet buffer.cpp buffer count+skip sample
         \snippet output.txt buffer count+skip sample
     */
-    auto buffer(int count, int skip) const
+    template<class... AN>
+    auto buffer(int count, int skip, AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS lift_if<std::vector<T>>(rxo::detail::buffer_count<T>(count, skip)))
         /// \endcond
     {
         return                    lift_if<std::vector<T>>(rxo::detail::buffer_count<T>(count, skip));
+        static_assert(sizeof...(AN) == 0, "buffer(count, skip) was passed too many arguments.");
     }
 
     /*! Return an observable that emits buffers every skip time interval and collects items from this observable for period of time into each produced buffer, on the specified scheduler.
@@ -1184,12 +1536,13 @@ public:
         \snippet buffer.cpp buffer period+skip empty sample
         \snippet output.txt buffer period+skip empty sample
     */
-    auto buffer_with_time(rxsc::scheduler::clock_type::duration period, rxsc::scheduler::clock_type::duration skip) const
+    template<class Duration>
+    auto buffer_with_time(Duration period, Duration skip) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift_if<std::vector<T>>(rxo::detail::buffer_with_time<T, rxsc::scheduler::clock_type::duration, identity_one_worker>(period, skip, identity_current_thread())))
+        -> decltype(EXPLICIT_THIS lift_if<std::vector<T>>(rxo::detail::buffer_with_time<T, Duration, identity_one_worker>(period, skip, identity_current_thread())))
         /// \endcond
     {
-        return                    lift_if<std::vector<T>>(rxo::detail::buffer_with_time<T, rxsc::scheduler::clock_type::duration, identity_one_worker>(period, skip, identity_current_thread()));
+        return                    lift_if<std::vector<T>>(rxo::detail::buffer_with_time<T, Duration, identity_one_worker>(period, skip, identity_current_thread()));
     }
 
     /*! Return an observable that emits buffers every period time interval and collects items from this observable for period of time into each produced buffer, on the specified scheduler.
@@ -1225,12 +1578,13 @@ public:
         \snippet buffer.cpp buffer period sample
         \snippet output.txt buffer period sample
     */
-    auto buffer_with_time(rxsc::scheduler::clock_type::duration period) const
+    template<class Duration>
+    auto buffer_with_time(Duration period) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift_if<std::vector<T>>(rxo::detail::buffer_with_time<T, rxsc::scheduler::clock_type::duration, identity_one_worker>(period, period, identity_current_thread())))
+        -> decltype(EXPLICIT_THIS lift_if<std::vector<T>>(rxo::detail::buffer_with_time<T, Duration, identity_one_worker>(period, period, identity_current_thread())))
         /// \endcond
     {
-        return                    lift_if<std::vector<T>>(rxo::detail::buffer_with_time<T, rxsc::scheduler::clock_type::duration, identity_one_worker>(period, period, identity_current_thread()));
+        return                    lift_if<std::vector<T>>(rxo::detail::buffer_with_time<T, Duration, identity_one_worker>(period, period, identity_current_thread()));
     }
 
     /*! Return an observable that emits connected, non-overlapping buffers of items from the source observable that were emitted during a fixed duration of time or when the buffer has reached maximum capacity (whichever occurs first), on the specified scheduler.
@@ -1267,12 +1621,13 @@ public:
         \snippet buffer.cpp buffer period+count sample
         \snippet output.txt buffer period+count sample
     */
-    auto buffer_with_time_or_count(rxsc::scheduler::clock_type::duration period, int count) const
+    template<class Duration>
+    auto buffer_with_time_or_count(Duration period, int count) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift_if<std::vector<T>>(rxo::detail::buffer_with_time_or_count<T, rxsc::scheduler::clock_type::duration, identity_one_worker>(period, count, identity_current_thread())))
+        -> decltype(EXPLICIT_THIS lift_if<std::vector<T>>(rxo::detail::buffer_with_time_or_count<T, Duration, identity_one_worker>(period, count, identity_current_thread())))
         /// \endcond
     {
-        return                    lift_if<std::vector<T>>(rxo::detail::buffer_with_time_or_count<T, rxsc::scheduler::clock_type::duration, identity_one_worker>(period, count, identity_current_thread()));
+        return                    lift_if<std::vector<T>>(rxo::detail::buffer_with_time_or_count<T, Duration, identity_one_worker>(period, count, identity_current_thread()));
     }
 
     /// \cond SHOW_SERVICE_MEMBERS
@@ -1295,12 +1650,14 @@ public:
         \snippet switch_on_next.cpp switch_on_next sample
         \snippet output.txt switch_on_next sample
     */
-    auto switch_on_next() const
+    template<class... AN>
+    auto switch_on_next(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> typename defer_switch_on_next<identity_one_worker>::observable_type
         /// \endcond
     {
         return      defer_switch_on_next<identity_one_worker>::make(*this, *this, identity_current_thread());
+        static_assert(sizeof...(AN) == 0, "switch_on_next() was passed too many arguments.");
     }
 
     /*! Return observable that emits the items emitted by the observable most recently emitted by the source observable, on the specified scheduler.
@@ -1347,12 +1704,14 @@ public:
         \snippet merge.cpp implicit merge sample
         \snippet output.txt implicit merge sample
     */
-    auto merge() const
+    template<class... AN>
+    auto merge(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> typename defer_merge<identity_one_worker>::observable_type
         /// \endcond
     {
         return      defer_merge<identity_one_worker>::make(*this, *this, identity_current_thread());
+        static_assert(sizeof...(AN) == 0, "merge() was passed too many arguments.");
     }
 
     /*! For each item from this observable subscribe.
@@ -1467,12 +1826,14 @@ public:
         \snippet amb.cpp implicit amb sample
         \snippet output.txt implicit amb sample
     */
-    auto amb() const
+    template<class... AN>
+    auto amb(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> typename defer_amb<identity_one_worker>::observable_type
         /// \endcond
     {
         return      defer_amb<identity_one_worker>::make(*this, *this, identity_current_thread());
+        static_assert(sizeof...(AN) == 0, "amb() was passed too many arguments.");
     }
 
     /*! For each item from only the first of the nested observables deliver from the new observable that is returned, on the specified scheduler.
@@ -1641,12 +2002,14 @@ public:
         \snippet concat.cpp implicit concat sample
         \snippet output.txt implicit concat sample
     */
-    auto concat() const
+    template<class... AN>
+    auto concat(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> typename defer_concat<identity_one_worker>::observable_type
         /// \endcond
     {
         return      defer_concat<identity_one_worker>::make(*this, *this, identity_current_thread());
+        static_assert(sizeof...(AN) == 0, "concat() was passed too many arguments.");
     }
 
     /*! For each item from this observable subscribe to one at a time, in the order received.
@@ -1797,288 +2160,52 @@ public:
                                                                                                                                       rxo::detail::concat_map<this_type, CollectionSelector, ResultSelector, Coordination>(*this, std::forward<CollectionSelector>(s), std::forward<ResultSelector>(rs), std::forward<Coordination>(cn)));
     }
 
-    /// \cond SHOW_SERVICE_MEMBERS
-    template<class Source, class Coordination, class TS, class C = rxu::types_checked>
-    struct select_combine_latest_cn : public std::false_type {};
-
-    template<class Source, class Coordination, class T0, class... TN>
-    struct select_combine_latest_cn<Source, Coordination, rxu::types<T0, TN...>, typename rxu::types_checked_from<typename Coordination::coordination_tag, typename T0::observable_tag, typename TN::observable_tag...>::type>
-        : public std::true_type
+    /*! @copydoc rx-with_latest_from.hpp
+     */
+    template<class... AN>
+    auto with_latest_from(AN... an) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(observable_member(with_latest_from_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
+        /// \endcond
     {
-        typedef rxo::detail::combine_latest<Coordination, rxu::detail::pack, Source, T0, TN...> operator_type;
-        typedef observable<typename operator_type::value_type, operator_type> observable_type;
-        template<class... ObservableN>
-        observable_type operator()(const Source& src, Coordination cn, ObservableN... on) const {
-            return observable_type(operator_type(std::move(cn), rxu::pack(), std::make_tuple(src, std::move(on)...)));
-        }
-    };
+        return      observable_member(with_latest_from_tag{},                *this, std::forward<AN>(an)...);
+    }
 
-    template<class Source, class Coordination, class T0, class... TN>
-    struct select_combine_latest_cn<Source, Coordination, rxu::types<T0, TN...>, typename rxu::types_checked_from<typename Source::value_type, typename TN::value_type..., typename std::enable_if<!is_observable<T0>::value>::type, typename std::result_of<T0(typename Source::value_type, typename TN::value_type...)>::type, typename Coordination::coordination_tag, typename TN::observable_tag...>::type>
-        : public std::true_type
-    {
-        typedef rxo::detail::combine_latest<Coordination, T0, Source, TN...> operator_type;
-        typedef observable<typename operator_type::value_type, operator_type> observable_type;
-        template<class... ObservableN>
-        observable_type operator()(const Source& src, Coordination cn, T0 t0, ObservableN... on) const {
-            return observable_type(operator_type(std::move(cn), std::move(t0), std::make_tuple(src, std::move(on)...)));
-        }
-    };
 
-    template<class Source, class TS, class C = rxu::types_checked>
-    struct select_combine_latest : public std::false_type {
-        template<class T0, class T1, class... TN>
-        void operator()(const Source&, T0, T1, TN...) const {
-            static_assert(is_coordination<T0>::value ||
-                is_observable<T0>::value ||
-                std::is_convertible<T0, std::function<void(typename T1::value_type, typename TN::value_type...)>>::value
-                , "T0 must be selector, coordination or observable");
-            static_assert(is_observable<T1>::value  ||
-                std::is_convertible<T1, std::function<void(typename TN::value_type...)>>::value, "T1 must be selector or observable");
-            static_assert(rxu::all_true<true, is_observable<TN>::value...>::value, "TN... must be observable");
-        }
-        template<class T0>
-        void operator()(const Source&, T0) const {
-            static_assert(is_observable<T0>::value, "T0 must be observable");
-        }
-    };
-
-    template<class Source, class T0, class T1, class... TN>
-    struct select_combine_latest<Source, rxu::types<T0, T1, TN...>, typename rxu::types_checked_from<typename T0::coordination_tag, typename TN::observable_tag...>::type>
-        : public select_combine_latest_cn<Source, T0, rxu::types<T1, TN...>>
-    {
-    };
-
-    template<class Source, class Selector, class... TN>
-    struct select_combine_latest<Source, rxu::types<Selector, TN...>, typename rxu::types_checked_from<typename Source::value_type, typename TN::value_type..., typename std::enable_if<!is_coordination<Selector>::value>::type, typename std::enable_if<!is_observable<Selector>::value>::type, typename std::result_of<Selector(typename Source::value_type, typename TN::value_type...)>::type, typename TN::observable_tag...>::type>
-        : public std::true_type
-    {
-        typedef rxo::detail::combine_latest<identity_one_worker, Selector, Source, TN...> operator_type;
-        typedef observable<typename operator_type::value_type, operator_type> observable_type;
-        template<class... ObservableN>
-        observable_type operator()(const Source& src, Selector sel, ObservableN... on) const {
-            return observable_type(operator_type(identity_current_thread(), std::move(sel), std::make_tuple(src, std::move(on)...)));
-        }
-    };
-
-    template<class Source, class T0, class... TN>
-    struct select_combine_latest<Source, rxu::types<T0, TN...>, typename rxu::types_checked_from<typename T0::observable_tag, typename TN::observable_tag...>::type>
-        : public std::true_type
-    {
-        typedef rxo::detail::combine_latest<identity_one_worker, rxu::detail::pack, Source, T0, TN...> operator_type;
-        typedef observable<typename operator_type::value_type, operator_type> observable_type;
-        template<class... ObservableN>
-        observable_type operator()(const Source& src, ObservableN... on) const {
-            return observable_type(operator_type(identity_current_thread(), rxu::pack(), std::make_tuple(src, std::move(on)...)));
-        }
-    };
-    /// \endcond
-
-    /*! For each item from all of the observables select a value to emit from the new observable that is returned.
-
-        \tparam AN  types of scheduler (optional), aggregate function (optional), and source observables
-
-        \param  an  scheduler (optional), aggregation function (optional), and source observables
-
-        \return  Observable that emits items that are the result of combining the items emitted by the source observables.
-
-        If scheduler is omitted, identity_current_thread is used.
-
-        If aggregation function is omitted, the resulting observable returns tuples of emitted items.
-
-        \sample
-
-        Neither scheduler nor aggregation function are present:
-        \snippet combine_latest.cpp combine_latest sample
-        \snippet output.txt combine_latest sample
-
-        Only scheduler is present:
-        \snippet combine_latest.cpp Coordination combine_latest sample
-        \snippet output.txt Coordination combine_latest sample
-
-        Only aggregation function is present:
-        \snippet combine_latest.cpp Selector combine_latest sample
-        \snippet output.txt Selector combine_latest sample
-
-        Both scheduler and aggregation function are present:
-        \snippet combine_latest.cpp Coordination+Selector combine_latest sample
-        \snippet output.txt Coordination+Selector combine_latest sample
-    */
+    /*! @copydoc rx-combine_latest.hpp
+     */
     template<class... AN>
     auto combine_latest(AN... an) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(select_combine_latest<this_type, rxu::types<decltype(an)...>>{}(*(this_type*)nullptr,  std::move(an)...))
+        -> decltype(observable_member(combine_latest_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
         /// \endcond
     {
-        return      select_combine_latest<this_type, rxu::types<decltype(an)...>>{}(*this,                 std::move(an)...);
+        return      observable_member(combine_latest_tag{},                *this, std::forward<AN>(an)...);
     }
 
-    /// \cond SHOW_SERVICE_MEMBERS
-    template<class Source, class Coordination, class TS, class C = rxu::types_checked>
-    struct select_zip_cn : public std::false_type {};
-
-    template<class Source, class Coordination, class T0, class... TN>
-    struct select_zip_cn<Source, Coordination, rxu::types<T0, TN...>, typename rxu::types_checked_from<typename Coordination::coordination_tag, typename T0::observable_tag, typename TN::observable_tag...>::type>
-        : public std::true_type
-    {
-        typedef rxo::detail::zip<Coordination, rxu::detail::pack, Source, T0, TN...> operator_type;
-        typedef observable<typename operator_type::value_type, operator_type> observable_type;
-        template<class... ObservableN>
-        observable_type operator()(const Source& src, Coordination cn, ObservableN... on) const {
-            return observable_type(operator_type(std::move(cn), rxu::pack(), std::make_tuple(src, std::move(on)...)));
-        }
-    };
-
-    template<class Source, class Coordination, class T0, class... TN>
-    struct select_zip_cn<Source, Coordination, rxu::types<T0, TN...>, typename rxu::types_checked_from<typename Source::value_type, typename TN::value_type..., typename std::enable_if<!is_observable<T0>::value>::type, typename std::result_of<T0(typename Source::value_type, typename TN::value_type...)>::type, typename Coordination::coordination_tag, typename TN::observable_tag...>::type>
-        : public std::true_type
-    {
-        typedef rxo::detail::zip<Coordination, T0, Source, TN...> operator_type;
-        typedef observable<typename operator_type::value_type, operator_type> observable_type;
-        template<class... ObservableN>
-        observable_type operator()(const Source& src, Coordination cn, T0 t0, ObservableN... on) const {
-            return observable_type(operator_type(std::move(cn), std::move(t0), std::make_tuple(src, std::move(on)...)));
-        }
-    };
-
-    template<class Source, class TS, class C = rxu::types_checked>
-    struct select_zip : public std::false_type {
-        template<class T0, class T1, class... TN>
-        void operator()(const Source&, T0, T1, TN...) const {
-            static_assert(is_coordination<T0>::value ||
-                is_observable<T0>::value ||
-                std::is_convertible<T0, std::function<void(typename T1::value_type, typename TN::value_type...)>>::value
-                , "T0 must be selector, coordination or observable");
-            static_assert(is_observable<T1>::value  ||
-                std::is_convertible<T1, std::function<void(typename TN::value_type...)>>::value, "T1 must be selector or observable");
-            static_assert(rxu::all_true<true, is_observable<TN>::value...>::value, "TN... must be observable");
-        }
-        template<class T0>
-        void operator()(const Source&, T0) const {
-            static_assert(is_observable<T0>::value, "T0 must be observable");
-        }
-    };
-
-    template<class Source, class T0, class T1, class... TN>
-    struct select_zip<Source, rxu::types<T0, T1, TN...>, typename rxu::types_checked_from<typename T0::coordination_tag, typename TN::observable_tag...>::type>
-        : public select_zip_cn<Source, T0, rxu::types<T1, TN...>>
-    {
-    };
-
-    template<class Source, class Selector, class... TN>
-    struct select_zip<Source, rxu::types<Selector, TN...>, typename rxu::types_checked_from<typename Source::value_type, typename TN::value_type..., typename std::enable_if<!is_coordination<Selector>::value>::type, typename std::enable_if<!is_observable<Selector>::value>::type, typename std::result_of<Selector(typename Source::value_type, typename TN::value_type...)>::type, typename TN::observable_tag...>::type>
-        : public std::true_type
-    {
-        typedef rxo::detail::zip<identity_one_worker, Selector, Source, TN...> operator_type;
-        typedef observable<typename operator_type::value_type, operator_type> observable_type;
-        template<class... ObservableN>
-        observable_type operator()(const Source& src, Selector sel, ObservableN... on) const {
-            return observable_type(operator_type(identity_current_thread(), std::move(sel), std::make_tuple(src, std::move(on)...)));
-        }
-    };
-
-    template<class Source, class T0, class... TN>
-    struct select_zip<Source, rxu::types<T0, TN...>, typename rxu::types_checked_from<typename T0::observable_tag, typename TN::observable_tag...>::type>
-        : public std::true_type
-    {
-        typedef rxo::detail::zip<identity_one_worker, rxu::detail::pack, Source, T0, TN...> operator_type;
-        typedef observable<typename operator_type::value_type, operator_type> observable_type;
-        template<class... ObservableN>
-        observable_type operator()(const Source& src, ObservableN... on) const {
-            return observable_type(operator_type(identity_current_thread(), rxu::pack(), std::make_tuple(src, std::move(on)...)));
-        }
-    };
-    /// \endcond
-
-    /*! Bring by one item from all given observables and select a value to emit from the new observable that is returned.
-
-        \tparam AN  types of scheduler (optional), aggregate function (optional), and source observables
-
-        \param  an  scheduler (optional), aggregation function (optional), and source observables
-
-        \return  Observable that emits the result of combining the items emitted and brought by one from each of the source observables.
-
-        If scheduler is omitted, identity_current_thread is used.
-
-        If aggregation function is omitted, the resulting observable returns tuples of emitted items.
-
-        \sample
-
-        Neither scheduler nor aggregation function are present:
-        \snippet zip.cpp zip sample
-        \snippet output.txt zip sample
-
-        Only scheduler is present:
-        \snippet zip.cpp Coordination zip sample
-        \snippet output.txt Coordination zip sample
-
-        Only aggregation function is present:
-        \snippet zip.cpp Selector zip sample
-        \snippet output.txt Selector zip sample
-
-        Both scheduler and aggregation function are present:
-        \snippet zip.cpp Coordination+Selector zip sample
-        \snippet output.txt Coordination+Selector zip sample
-    */
+    /*! @copydoc rx-zip.hpp
+     */
     template<class... AN>
-    auto zip(AN... an) const
+    auto zip(AN&&... an) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(select_zip<this_type, rxu::types<decltype(an)...>>{}(*(this_type*)nullptr,  std::move(an)...))
+        -> decltype(observable_member(zip_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
         /// \endcond
     {
-        return      select_zip<this_type, rxu::types<decltype(an)...>>{}(*this,                 std::move(an)...);
+        return      observable_member(zip_tag{},                *this, std::forward<AN>(an)...);
     }
 
-    /*! Return an observable that emits grouped_observables, each of which corresponds to a unique key value and each of which emits those items from the source observable that share that key value.
-
-        \tparam KeySelector      the type of the key extracting function
-        \tparam MarbleSelector   the type of the element extracting function
-        \tparam BinaryPredicate  the type of the key comparing function
-
-        \param  ks  a function that extracts the key for each item
-        \param  ms  a function that extracts the return element for each item
-        \param  p   a function that implements comparison of two keys
-
-        \return  Observable that emits values of grouped_observable type, each of which corresponds to a unique key value and each of which emits those items from the source observable that share that key value.
-
-        \sample
-        \snippet group_by.cpp group_by full intro
-        \snippet group_by.cpp group_by full sample
-        \snippet output.txt group_by full sample
-    */
-    template<class KeySelector, class MarbleSelector, class BinaryPredicate>
-    inline auto group_by(KeySelector ks, MarbleSelector ms, BinaryPredicate p) const
+    /*! @copydoc rx-group_by.hpp
+     */
+    template<class... AN>
+    inline auto group_by(AN&&... an) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift<typename rxo::detail::group_by_traits<T, this_type, KeySelector, MarbleSelector, BinaryPredicate>::grouped_observable_type>(rxo::detail::group_by<T, this_type, KeySelector, MarbleSelector, BinaryPredicate>(std::move(ks), std::move(ms), std::move(p))))
+        -> decltype(observable_member(group_by_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
         /// \endcond
     {
-        return                    lift<typename rxo::detail::group_by_traits<T, this_type, KeySelector, MarbleSelector, BinaryPredicate>::grouped_observable_type>(rxo::detail::group_by<T, this_type, KeySelector, MarbleSelector, BinaryPredicate>(std::move(ks), std::move(ms), std::move(p)));
+        return      observable_member(group_by_tag{},                *this, std::forward<AN>(an)...);
     }
 
-    /*! Return an observable that emits grouped_observables, each of which corresponds to a unique key value and each of which emits those items from the source observable that share that key value.
-
-        \tparam KeySelector     the type of the key extracting function
-        \tparam MarbleSelector  the type of the element extracting function
-
-        \param  ks  a function that extracts the key for each item
-        \param  ms  a function that extracts the return element for each item
-
-        \return  Observable that emits values of grouped_observable type, each of which corresponds to a unique key value and each of which emits those items from the source observable that share that key value.
-
-        \sample
-        \snippet group_by.cpp group_by sample
-        \snippet output.txt group_by sample
-    */
-    template<class KeySelector, class MarbleSelector>
-    inline auto group_by(KeySelector ks, MarbleSelector ms) const
-        /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(EXPLICIT_THIS lift<typename rxo::detail::group_by_traits<T, this_type, KeySelector, MarbleSelector, rxu::less>::grouped_observable_type>(rxo::detail::group_by<T, this_type, KeySelector, MarbleSelector, rxu::less>(std::move(ks), std::move(ms), rxu::less())))
-        /// \endcond
-    {
-        return                    lift<typename rxo::detail::group_by_traits<T, this_type, KeySelector, MarbleSelector, rxu::less>::grouped_observable_type>(rxo::detail::group_by<T, this_type, KeySelector, MarbleSelector, rxu::less>(std::move(ks), std::move(ms), rxu::less()));
-    }
-
-      /*! Do not emit any items from the source Observable, but allow termination notification (either onError or onCompleted) to pass through unchanged.
+    /*! Do not emit any items from the source Observable, but allow termination notification (either onError or onCompleted) to pass through unchanged.
 
         \return  Observable that emits termination notification from the source observable.
 
@@ -2086,12 +2213,14 @@ public:
         \snippet ignore_elements.cpp ignore_elements sample
         \snippet output.txt ignore_elements sample
     */
-    auto ignore_elements() const
+    template<class... AN>
+    auto ignore_elements(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS lift<T>(rxo::detail::ignore_elements<T>()))
         /// \endcond
     {
         return                    lift<T>(rxo::detail::ignore_elements<T>());
+        static_assert(sizeof...(AN) == 0, "ignore_elements() takes no arguments");
     }
 
 
@@ -2131,6 +2260,25 @@ public:
 
     /*! Turn a cold observable hot and allow connections to the source to be independent of subscriptions.
 
+        \return  rxcpp::connectable_observable that upon connection causes the source observable to emit items to its observers.
+
+        \sample
+        \snippet publish.cpp publish subject sample
+        \snippet output.txt publish subject sample
+    */
+    template<class... AN>
+    auto publish(AN**...) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS multicast(rxsub::subject<T>(composite_subscription())))
+        /// \endcond
+    {
+        composite_subscription cs;
+        return                    multicast(rxsub::subject<T>(cs));
+        static_assert(sizeof...(AN) == 0, "publish() was passed too many arguments.");
+    }
+
+    /*! Turn a cold observable hot and allow connections to the source to be independent of subscriptions.
+
         \param  cs  the subscription to control lifetime
 
         \return  rxcpp::connectable_observable that upon connection causes the source observable to emit items to its observers.
@@ -2139,12 +2287,37 @@ public:
         \snippet publish.cpp publish subject sample
         \snippet output.txt publish subject sample
     */
-    auto publish(composite_subscription cs = composite_subscription()) const
+    template<class... AN>
+    auto publish(composite_subscription cs, AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS multicast(rxsub::subject<T>(cs)))
         /// \endcond
     {
         return                    multicast(rxsub::subject<T>(cs));
+        static_assert(sizeof...(AN) == 0, "publish(composite_subscription) was passed too many arguments.");
+    }
+
+    /*! Turn a cold observable hot, send the most recent value to any new subscriber, and allow connections to the source to be independent of subscriptions.
+
+        \tparam  T  the type of the emitted item
+
+        \param  first  an initial item to be emitted by the resulting observable at connection time before emitting the items from the source observable; not emitted to observers that subscribe after the time of connection
+
+        \return  rxcpp::connectable_observable that upon connection causes the source observable to emit items to its observers.
+
+        \sample
+        \snippet publish.cpp publish behavior sample
+        \snippet output.txt publish behavior sample
+    */
+    template<class... AN>
+    auto publish(T first, AN**...) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS multicast(rxsub::behavior<T>(first, composite_subscription())))
+        /// \endcond
+    {
+        composite_subscription cs;
+        return      multicast(rxsub::behavior<T>(first, cs));
+        static_assert(sizeof...(AN) == 0, "publish(value_type) was passed too many arguments.");
     }
 
     /*! Turn a cold observable hot, send the most recent value to any new subscriber, and allow connections to the source to be independent of subscriptions.
@@ -2160,12 +2333,33 @@ public:
         \snippet publish.cpp publish behavior sample
         \snippet output.txt publish behavior sample
     */
-    auto publish(T first, composite_subscription cs = composite_subscription()) const
+    template<class... AN>
+    auto publish(T first, composite_subscription cs, AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS multicast(rxsub::behavior<T>(first, cs)))
         /// \endcond
     {
         return      multicast(rxsub::behavior<T>(first, cs));
+        static_assert(sizeof...(AN) == 0, "publish(value_type, composite_subscription) was passed too many arguments.");
+    }
+
+    /*! Turn a cold observable hot, send all earlier emitted values to any new subscriber, and allow connections to the source to be independent of subscriptions.
+
+        \return  rxcpp::connectable_observable that shares a single subscription to the underlying observable that will replay all of its items and notifications to any future observer.
+
+        \sample
+        \snippet replay.cpp replay sample
+        \snippet output.txt replay sample
+    */
+    template<class... AN>
+    auto replay(AN**...) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS multicast(rxsub::replay<T, identity_one_worker>(identity_current_thread(), composite_subscription())))
+        /// \endcond
+    {
+        composite_subscription cs;
+        return      multicast(rxsub::replay<T, identity_one_worker>(identity_current_thread(), cs));
+        static_assert(sizeof...(AN) == 0, "replay() was passed too many arguments.");
     }
 
     /*! Turn a cold observable hot, send all earlier emitted values to any new subscriber, and allow connections to the source to be independent of subscriptions.
@@ -2178,12 +2372,14 @@ public:
         \snippet replay.cpp replay sample
         \snippet output.txt replay sample
     */
-    auto replay(composite_subscription cs = composite_subscription()) const
+    template<class... AN>
+    auto replay(composite_subscription cs, AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS multicast(rxsub::replay<T, identity_one_worker>(identity_current_thread(), cs)))
         /// \endcond
     {
         return      multicast(rxsub::replay<T, identity_one_worker>(identity_current_thread(), cs));
+        static_assert(sizeof...(AN) == 0, "replay(composite_subscription) was passed too many arguments.");
     }
 
     /*! Turn a cold observable hot, send all earlier emitted values to any new subscriber, and allow connections to the source to be independent of subscriptions.
@@ -2212,6 +2408,27 @@ public:
     /*! Turn a cold observable hot, send at most count of earlier emitted values to any new subscriber, and allow connections to the source to be independent of subscriptions.
 
         \param  count  the maximum number of the most recent items sent to new observers
+
+        \return  rxcpp::connectable_observable that shares a single subscription to the underlying observable that will replay at most count items to any future observer.
+
+        \sample
+        \snippet replay.cpp replay count sample
+        \snippet output.txt replay count sample
+    */
+    template<class... AN>
+    auto replay(std::size_t count, AN**...) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(EXPLICIT_THIS multicast(rxsub::replay<T, identity_one_worker>(count, identity_current_thread(), composite_subscription())))
+        /// \endcond
+    {
+        composite_subscription cs;
+        return      multicast(rxsub::replay<T, identity_one_worker>(count, identity_current_thread(), cs));
+        static_assert(sizeof...(AN) == 0, "replay(count) was passed too many arguments.");
+    }
+
+    /*! Turn a cold observable hot, send at most count of earlier emitted values to any new subscriber, and allow connections to the source to be independent of subscriptions.
+
+        \param  count  the maximum number of the most recent items sent to new observers
         \param  cs     the subscription to control lifetime
 
         \return  rxcpp::connectable_observable that shares a single subscription to the underlying observable that will replay at most count items to any future observer.
@@ -2220,12 +2437,14 @@ public:
         \snippet replay.cpp replay count sample
         \snippet output.txt replay count sample
     */
-    auto replay(std::size_t count, composite_subscription cs = composite_subscription()) const
+    template<class... AN>
+    auto replay(std::size_t count, composite_subscription cs, AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS multicast(rxsub::replay<T, identity_one_worker>(count, identity_current_thread(), cs)))
         /// \endcond
     {
         return      multicast(rxsub::replay<T, identity_one_worker>(count, identity_current_thread(), cs));
+        static_assert(sizeof...(AN) == 0, "replay(count, composite_subscription) was passed too many arguments.");
     }
 
     /*! Turn a cold observable hot, send at most count of earlier emitted values to any new subscriber, and allow connections to the source to be independent of subscriptions.
@@ -2263,7 +2482,8 @@ public:
         \snippet replay.cpp replay period sample
         \snippet output.txt replay period sample
     */
-    auto replay(rxsc::scheduler::clock_type::duration period, composite_subscription cs = composite_subscription()) const
+    template<class Duration>
+    auto replay(Duration period, composite_subscription cs = composite_subscription()) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS multicast(rxsub::replay<T, identity_one_worker>(period, identity_current_thread(), cs)))
         /// \endcond
@@ -2307,7 +2527,8 @@ public:
         \snippet replay.cpp replay count+period sample
         \snippet output.txt replay count+period sample
     */
-    auto replay(std::size_t count, rxsc::scheduler::clock_type::duration period, composite_subscription cs = composite_subscription()) const
+    template<class Duration>
+    auto replay(std::size_t count, Duration period, composite_subscription cs = composite_subscription()) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS multicast(rxsub::replay<T, identity_one_worker>(count, period, identity_current_thread(), cs)))
         /// \endcond
@@ -2389,208 +2610,99 @@ public:
         return                    lift<T>(rxo::detail::observe_on<T, Coordination>(std::move(cn)));
     }
 
-    /*! For each item from this observable use Accumulator to combine items, when completed use ResultSelector to produce a value that will be emitted from the new observable that is returned.
-
-        \tparam Seed            the type of the initial value for the accumulator
-        \tparam Accumulator     the type of the data accumulating function
-        \tparam ResultSelector  the type of the result producing function
-
-        \param seed  the initial value for the accumulator
-        \param a     an accumulator function to be invoked on each item emitted by the source observable, the result of which will be used in the next accumulator call
-        \param rs    a result producing function that makes the final value from the last accumulator call result
-
-        \return  An observable that emits a single item that is the result of accumulating the output from the items emitted by the source observable.
-
-        Some basic reduce-type operators have already been implemented:
-        - rxcpp::observable::count
-        - rxcpp::observable::sum
-        - rxcpp::observable::average
-        - rxcpp::observable::min
-        - rxcpp::observable::max
-
-        \sample
-        Geometric mean of source values:
-        \snippet reduce.cpp reduce sample
-        \snippet output.txt reduce sample
-
-        If the source observable completes without emitting any items, the resulting observable emits the result of passing the initial seed to the result selector:
-        \snippet reduce.cpp reduce empty sample
-        \snippet output.txt reduce empty sample
-
-        If the accumulator raises an exception, it is returned by the resulting observable in on_error:
-        \snippet reduce.cpp reduce exception from accumulator sample
-        \snippet output.txt reduce exception from accumulator sample
-
-        The same for exceptions raised by the result selector:
-        \snippet reduce.cpp reduce exception from result selector sample
-        \snippet output.txt reduce exception from result selector sample
-    */
-    template<class Seed, class Accumulator, class ResultSelector>
-    auto reduce(Seed seed, Accumulator&& a, ResultSelector&& rs) const
+    /*! @copydoc rx-reduce.hpp
+     */
+    template<class... AN>
+    auto reduce(AN&&... an) const
         /// \cond SHOW_SERVICE_MEMBERS
-        ->      observable<rxu::value_type_t<rxo::detail::reduce<T, source_operator_type, Accumulator, ResultSelector, Seed>>,    rxo::detail::reduce<T, source_operator_type, Accumulator, ResultSelector, Seed>>
+        -> decltype(observable_member(reduce_tag{}, *(this_type*)nullptr, std::forward<AN>(an)...))
         /// \endcond
     {
-        return  observable<rxu::value_type_t<rxo::detail::reduce<T, source_operator_type, Accumulator, ResultSelector, Seed>>,    rxo::detail::reduce<T, source_operator_type, Accumulator, ResultSelector, Seed>>(
-                                                                                                                                  rxo::detail::reduce<T, source_operator_type, Accumulator, ResultSelector, Seed>(source_operator, std::forward<Accumulator>(a), std::forward<ResultSelector>(rs), seed));
+        return      observable_member(reduce_tag{},                *this, std::forward<AN>(an)...);
     }
 
-    /// \cond SHOW_SERVICE_MEMBERS
-    template<class Seed, class Accumulator, class ResultSelector>
-    struct defer_reduce : public defer_observable<
-        rxu::all_true<
-            rxu::defer_trait<rxo::detail::is_accumulate_function_for, T, Seed, Accumulator>::value,
-            rxu::defer_trait<rxo::detail::is_result_function_for, Seed, ResultSelector>::value>,
-        void,
-        rxo::detail::reduce, T, source_operator_type, Accumulator, ResultSelector, Seed>
-    {
-    };
-    /// \endcond
-
-    /*! For each item from this observable reduce it by sending only the first item.
-
-        \return  An observable that emits only the very first item emitted by the source observable.
-
-        \sample
-        \snippet math.cpp first sample
-        \snippet output.txt first sample
-
-        When the source observable calls on_error:
-        \snippet math.cpp first empty sample
-        \snippet output.txt first empty sample
-    */
-    auto first() const
-        -> observable<T>;
-
-    /*! For each item from this observable reduce it by sending only the last item.
-
-        \return  An observable that emits only the very last item emitted by the source observable.
-
-        \sample
-        \snippet math.cpp last sample
-        \snippet output.txt last sample
-
-        When the source observable calls on_error:
-        \snippet math.cpp last empty sample
-        \snippet output.txt last empty sample
-    */
-    auto last() const
-        -> observable<T>;
-
-    /*! For each item from this observable reduce it by incrementing a count.
-
-        \return  An observable that emits a single item: the number of elements emitted by the source observable.
-
-        \sample
-        \snippet math.cpp count sample
-        \snippet output.txt count sample
-
-        When the source observable calls on_error:
-        \snippet math.cpp count error sample
-        \snippet output.txt count error sample
-    */
-    auto count() const
+    /*! @copydoc rxcpp::operators::first
+     */
+    template<class... AN>
+    auto first(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> typename defer_reduce<int, rxu::count, rxu::defer_type<identity_for, int>>::observable_type
+        -> decltype(observable_member(delayed_type<first_tag, AN...>::value(), *(this_type*)nullptr))
         /// \endcond
     {
-        return      defer_reduce<int, rxu::count, rxu::defer_type<identity_for, int>>::make(source_operator, rxu::count(), identity_for<int>(), 0);
+        return      observable_member(delayed_type<first_tag, AN...>::value(),                *this);
+        static_assert(sizeof...(AN) == 0, "first() was passed too many arguments.");
     }
 
-    /*! For each item from this observable reduce it by adding to the previous items.
-
-        \return  An observable that emits a single item: the sum of elements emitted by the source observable.
-
-        \sample
-        \snippet math.cpp sum sample
-        \snippet output.txt sum sample
-
-        When the source observable completes without emitting any items:
-        \snippet math.cpp sum empty sample
-        \snippet output.txt sum empty sample
-
-        When the source observable calls on_error:
-        \snippet math.cpp sum error sample
-        \snippet output.txt sum error sample
-    */
-    auto sum() const
+    /*! @copydoc rxcpp::operators::last
+     */
+    template<class... AN>
+    auto last(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> typename defer_reduce<rxu::defer_seed_type<rxo::detail::sum, T>, rxu::defer_type<rxo::detail::sum, T>, rxu::defer_type<rxo::detail::sum, T>>::observable_type
+        -> decltype(observable_member(delayed_type<last_tag, AN...>::value(), *(this_type*)nullptr))
         /// \endcond
     {
-        return      defer_reduce<rxu::defer_seed_type<rxo::detail::sum, T>, rxu::defer_type<rxo::detail::sum, T>, rxu::defer_type<rxo::detail::sum, T>>::make(source_operator, rxo::detail::sum<T>(), rxo::detail::sum<T>(), rxo::detail::sum<T>().seed());
+        return      observable_member(delayed_type<last_tag, AN...>::value(),                *this);
+        static_assert(sizeof...(AN) == 0, "last() was passed too many arguments.");
     }
 
-    /*! For each item from this observable reduce it by adding to the previous values and then dividing by the number of items at the end.
-
-        \return  An observable that emits a single item: the average of elements emitted by the source observable.
-
-        \sample
-        \snippet math.cpp average sample
-        \snippet output.txt average sample
-
-        When the source observable completes without emitting any items:
-        \snippet math.cpp average empty sample
-        \snippet output.txt average empty sample
-
-        When the source observable calls on_error:
-        \snippet math.cpp average error sample
-        \snippet output.txt average error sample
-    */
-    auto average() const
+    /*! @copydoc rxcpp::operators::count
+     */
+    template<class... AN>
+    auto count(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> typename defer_reduce<rxu::defer_seed_type<rxo::detail::average, T>, rxu::defer_type<rxo::detail::average, T>, rxu::defer_type<rxo::detail::average, T>>::observable_type
+        -> decltype(observable_member(delayed_type<reduce_tag, AN...>::value(), *(this_type*)nullptr, 0, rxu::count(), identity_for<int>()))
         /// \endcond
     {
-        return      defer_reduce<rxu::defer_seed_type<rxo::detail::average, T>, rxu::defer_type<rxo::detail::average, T>, rxu::defer_type<rxo::detail::average, T>>::make(source_operator, rxo::detail::average<T>(), rxo::detail::average<T>(), rxo::detail::average<T>().seed());
+        return      observable_member(delayed_type<reduce_tag, AN...>::value(),                *this, 0, rxu::count(), identity_for<int>());
+        static_assert(sizeof...(AN) == 0, "count() was passed too many arguments.");
     }
 
-    /*! For each item from this observable reduce it by taking the max value of the previous items.
-
-        \return  An observable that emits a single item: the max of elements emitted by the source observable.
-
-        \sample
-        \snippet math.cpp max sample
-        \snippet output.txt max sample
-
-        When the source observable completes without emitting any items:
-        \snippet math.cpp max empty sample
-        \snippet output.txt max empty sample
-
-        When the source observable calls on_error:
-        \snippet math.cpp max error sample
-        \snippet output.txt max error sample
-    */
-    auto max() const
+    /*! @copydoc rxcpp::operators::sum
+     */
+    template<class... AN>
+    auto sum(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> typename defer_reduce<rxu::defer_seed_type<rxo::detail::max, T>, rxu::defer_type<rxo::detail::max, T>, rxu::defer_type<rxo::detail::max, T>>::observable_type
+        -> decltype(observable_member(delayed_type<sum_tag, AN...>::value(), *(this_type*)nullptr))
         /// \endcond
     {
-        return      defer_reduce<rxu::defer_seed_type<rxo::detail::max, T>, rxu::defer_type<rxo::detail::max, T>, rxu::defer_type<rxo::detail::max, T>>::make(source_operator, rxo::detail::max<T>(), rxo::detail::max<T>(), rxo::detail::max<T>().seed());
+        return      observable_member(delayed_type<sum_tag, AN...>::value(),                *this);
+        static_assert(sizeof...(AN) == 0, "sum() was passed too many arguments.");
     }
 
-    /*! For each item from this observable reduce it by taking the min value of the previous items.
-
-        \return  An observable that emits a single item: the min of elements emitted by the source observable.
-
-        \sample
-        \snippet math.cpp min sample
-        \snippet output.txt min sample
-
-        When the source observable completes without emitting any items:
-        \snippet math.cpp min empty sample
-        \snippet output.txt min empty sample
-
-        When the source observable calls on_error:
-        \snippet math.cpp min error sample
-        \snippet output.txt min error sample
-    */
-    auto min() const
+    /*! @copydoc rxcpp::operators::average
+     */
+    template<class... AN>
+    auto average(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> typename defer_reduce<rxu::defer_seed_type<rxo::detail::min, T>, rxu::defer_type<rxo::detail::min, T>, rxu::defer_type<rxo::detail::min, T>>::observable_type
+        -> decltype(observable_member(delayed_type<average_tag, AN...>::value(), *(this_type*)nullptr))
         /// \endcond
     {
-        return      defer_reduce<rxu::defer_seed_type<rxo::detail::min, T>, rxu::defer_type<rxo::detail::min, T>, rxu::defer_type<rxo::detail::min, T>>::make(source_operator, rxo::detail::min<T>(), rxo::detail::min<T>(), rxo::detail::min<T>().seed());
+        return      observable_member(delayed_type<average_tag, AN...>::value(),                *this);
+        static_assert(sizeof...(AN) == 0, "average() was passed too many arguments.");
+    }
+
+    /*! @copydoc rxcpp::operators::max
+     */
+    template<class... AN>
+    auto max(AN**...) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(observable_member(delayed_type<max_tag, AN...>::value(), *(this_type*)nullptr))
+        /// \endcond
+    {
+        return      observable_member(delayed_type<max_tag, AN...>::value(),                *this);
+        static_assert(sizeof...(AN) == 0, "max() was passed too many arguments.");
+    }
+
+    /*! @copydoc rxcpp::operators::min
+     */
+    template<class... AN>
+    auto min(AN**...) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        -> decltype(observable_member(delayed_type<min_tag, AN...>::value(), *(this_type*)nullptr))
+        /// \endcond
+    {
+        return      observable_member(delayed_type<min_tag, AN...>::value(),                *this);
+        static_assert(sizeof...(AN) == 0, "min() was passed too many arguments.");
     }
 
     /*! For each item from this observable use Accumulator to combine items into a value that will be emitted from the new observable that is returned.
@@ -2648,12 +2760,14 @@ public:
         \snippet sample.cpp sample period sample
         \snippet output.txt sample period sample
     */
-    auto sample_with_time(rxsc::scheduler::clock_type::duration period) const
+    template<class... AN>
+    auto sample_with_time(rxsc::scheduler::clock_type::duration period, AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS lift<T>(rxo::detail::sample_with_time<T, rxsc::scheduler::clock_type::duration, identity_one_worker>(period, identity_current_thread())))
         /// \endcond
     {
         return                    lift<T>(rxo::detail::sample_with_time<T, rxsc::scheduler::clock_type::duration, identity_one_worker>(period, identity_current_thread()));
+        static_assert(sizeof...(AN) == 0, "sample_with_time(period) was passed too many arguments.");
     }
 
     /*! Make new observable with skipped first count items from this observable.
@@ -2676,6 +2790,28 @@ public:
     {
         return  observable<T,   rxo::detail::skip<T, this_type, Count>>(
                                 rxo::detail::skip<T, this_type, Count>(*this, t));
+    }
+
+    /*! Make new observable with skipped last count items from this observable.
+
+        \tparam  Count  the type of the items counter
+
+        \param  t  the number of last items to skip
+
+        \return  An observable that is identical to the source observable except that it does not emit the last t items that the source observable emits.
+
+        \sample
+        \snippet skip_last.cpp skip_last sample
+        \snippet output.txt skip_last sample
+    */
+    template<class Count>
+    auto skip_last(Count t) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        ->      observable<T,   rxo::detail::skip_last<T, this_type, Count>>
+        /// \endcond
+    {
+        return  observable<T,   rxo::detail::skip_last<T, this_type, Count>>(
+                                rxo::detail::skip_last<T, this_type, Count>(*this, t));
     }
 
     /*! Make new observable with items skipped until on_next occurs on the trigger observable
@@ -2749,6 +2885,29 @@ public:
         return  observable<T,   rxo::detail::take<T, this_type, Count>>(
                                 rxo::detail::take<T, this_type, Count>(*this, t));
     }
+
+    /*! Emit only the final t items emitted by the source Observable.
+
+        \tparam Count  the type of the items counter
+
+        \param t  the number of last items to take
+
+        \return  An observable that emits only the last t items emitted by the source Observable, or all of the items from the source observable if that observable emits fewer than t items.
+
+        \sample
+        \snippet take_last.cpp take_last sample
+        \snippet output.txt take_last sample
+    */
+    template<class Count>
+    auto take_last(Count t) const
+        /// \cond SHOW_SERVICE_MEMBERS
+        ->      observable<T,   rxo::detail::take_last<T, this_type, Count>>
+        /// \endcond
+    {
+        return  observable<T,   rxo::detail::take_last<T, this_type, Count>>(
+                                rxo::detail::take_last<T, this_type, Count>(*this, t));
+    }
+
 
     /*! For each item from this observable until on_next occurs on the trigger observable, emit them from the new observable that is returned.
 
@@ -2861,13 +3020,15 @@ public:
         \snippet repeat.cpp repeat error sample
         \snippet output.txt repeat error sample
     */
-    auto repeat() const
+    template<class... AN>
+    auto repeat(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         ->      observable<T, rxo::detail::repeat<T, this_type, int>>
         /// \endcond
     {
         return  observable<T, rxo::detail::repeat<T, this_type, int>>(
             rxo::detail::repeat<T, this_type, int>(*this, 0));
+        static_assert(sizeof...(AN) == 0, "repeat() was passed too many arguments.");
     }
 
     /*! Repeat this observable for the given number of times.
@@ -2902,13 +3063,15 @@ public:
         \snippet retry.cpp retry sample
         \snippet output.txt retry sample
     */
-    auto retry() const
+    template<class... AN>
+    auto retry(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         ->      observable<T, rxo::detail::retry<T, this_type, int>>
         /// \endcond
     {
         return  observable<T, rxo::detail::retry<T, this_type, int>>(
             rxo::detail::retry<T, this_type, int>(*this, 0));
+        static_assert(sizeof...(AN) == 0, "retry() was passed too many arguments.");
     }
 
     /*! Retry this observable for the given number of times.
@@ -2956,10 +3119,10 @@ public:
     template<class Value0, class... ValueN>
     auto start_with(Value0 v0, ValueN... vn) const
         /// \cond SHOW_SERVICE_MEMBERS
-        -> decltype(rxo::start_with(*(this_type*)nullptr, std::move(v0), std::move(vn)...))
+        -> decltype(rxo::start_with(std::move(v0), std::move(vn)...)(*(this_type*)nullptr))
         /// \endcond
     {
-        return      rxo::start_with(*this, std::move(v0), std::move(vn)...);
+        return      rxo::start_with(std::move(v0), std::move(vn)...)(*this);
     }
 
     /*! Take values pairwise from this observable.
@@ -2974,34 +3137,16 @@ public:
         \snippet pairwise.cpp pairwise short sample
         \snippet output.txt pairwise short sample
     */
-    auto pairwise() const
+    template<class... AN>
+    auto pairwise(AN**...) const
         /// \cond SHOW_SERVICE_MEMBERS
         -> decltype(EXPLICIT_THIS lift<rxu::value_type_t<rxo::detail::pairwise<T>>>(rxo::detail::pairwise<T>()))
         /// \endcond
     {
         return                    lift<rxu::value_type_t<rxo::detail::pairwise<T>>>(rxo::detail::pairwise<T>());
+        static_assert(sizeof...(AN) == 0, "pairwise() was passed too many arguments.");
     }
 };
-
-template<class T, class SourceOperator>
-auto observable<T, SourceOperator>::last() const
-    -> observable<T> {
-    rxu::maybe<T> seed;
-    return this->reduce(
-        seed,
-        [](rxu::maybe<T>, T t){return rxu::maybe<T>(std::move(t));},
-        [](rxu::maybe<T> result){return result.empty() ? throw rxcpp::empty_error("last() requires a stream with at least one value") : result.get();});
-}
-
-template<class T, class SourceOperator>
-auto observable<T, SourceOperator>::first() const
-    -> observable<T> {
-    rxu::maybe<T> seed;
-    return this->take(1).reduce(
-        seed,
-        [](rxu::maybe<T>, T t){return rxu::maybe<T>(std::move(t));},
-        [](rxu::maybe<T> result){return result.empty() ? throw rxcpp::empty_error("first() requires a stream with at least one value") : result.get();});
-}
 
 template<class T, class SourceOperator>
 inline bool operator==(const observable<T, SourceOperator>& lhs, const observable<T, SourceOperator>& rhs) {
@@ -3240,9 +3385,11 @@ public:
         \snippet interval.cpp immediate interval sample
         \snippet output.txt immediate interval sample
     */
-    static auto interval(rxsc::scheduler::clock_type::duration period)
+    template<class... AN>
+    static auto interval(rxsc::scheduler::clock_type::duration period, AN**...)
         -> decltype(rxs::interval(period)) {
         return      rxs::interval(period);
+        static_assert(sizeof...(AN) == 0, "interval(period) was passed too many arguments.");
     }
     /*! Returns an observable that emits a sequential integer every specified time interval, on the specified scheduler.
 
@@ -3273,9 +3420,11 @@ public:
         \snippet interval.cpp interval sample
         \snippet output.txt interval sample
     */
-    static auto interval(rxsc::scheduler::clock_type::time_point initial, rxsc::scheduler::clock_type::duration period)
+    template<class... AN>
+    static auto interval(rxsc::scheduler::clock_type::time_point initial, rxsc::scheduler::clock_type::duration period, AN**...)
         -> decltype(rxs::interval(initial, period)) {
         return      rxs::interval(initial, period);
+        static_assert(sizeof...(AN) == 0, "interval(initial, period) was passed too many arguments.");
     }
     /*! Returns an observable that emits a sequential integer every specified time interval starting from the specified time point, on the specified scheduler.
 
@@ -3306,9 +3455,11 @@ public:
         \snippet timer.cpp timepoint timer sample
         \snippet output.txt timepoint timer sample
     */
-    static auto timer(rxsc::scheduler::clock_type::time_point when)
-        -> decltype(rxs::timer(when)) {
-        return      rxs::timer(when);
+    template<class... AN>
+    static auto timer(rxsc::scheduler::clock_type::time_point at, AN**...)
+        -> decltype(rxs::timer(at)) {
+        return      rxs::timer(at);
+        static_assert(sizeof...(AN) == 0, "timer(at) was passed too many arguments.");
     }
     /*! Returns an observable that emits an integer in the specified time interval.
 
@@ -3320,9 +3471,11 @@ public:
         \snippet timer.cpp duration timer sample
         \snippet output.txt duration timer sample
     */
-    static auto timer(rxsc::scheduler::clock_type::duration when)
-        -> decltype(rxs::timer(when)) {
-        return      rxs::timer(when);
+    template<class... AN>
+    static auto timer(rxsc::scheduler::clock_type::duration after, AN**...)
+        -> decltype(rxs::timer(after)) {
+        return      rxs::timer(after);
+        static_assert(sizeof...(AN) == 0, "timer(after) was passed too many arguments.");
     }
     /*! Returns an observable that emits an integer at the specified time point, on the specified scheduler.
 

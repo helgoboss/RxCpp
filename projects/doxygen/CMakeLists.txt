@@ -43,6 +43,7 @@ if(DOXYGEN_FOUND)
     # Target to build examples
     set(DOXY_EXAMPLE_SRC_LIST
         ${DOXY_EXAMPLES_SRC_DIR}/main.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/all.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/amb.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/as_dynamic.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/blocking_observable.cpp
@@ -50,13 +51,18 @@ if(DOXYGEN_FOUND)
         ${DOXY_EXAMPLES_SRC_DIR}/combine_latest.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/concat.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/concat_map.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/contains.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/create.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/defer.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/debounce.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/default_if_empty.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/delay.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/distinct.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/distinct_until_changed.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/element_at.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/empty.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/error.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/exists.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/filter.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/finally.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/flat_map.cpp
@@ -82,16 +88,24 @@ if(DOXYGEN_FOUND)
         ${DOXY_EXAMPLES_SRC_DIR}/sample.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/scan.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/scope.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/sequence_equal.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/skip.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/skip_last.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/skip_until.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/start_with.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/subscribe.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/subscribe_on.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/switch_if_empty.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/switch_on_next.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/take.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/take_last.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/take_until.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/tap.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/time_interval.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/timeout.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/timer.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/timestamp.cpp
+        ${DOXY_EXAMPLES_SRC_DIR}/with_latest_from.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/window.cpp
         ${DOXY_EXAMPLES_SRC_DIR}/zip.cpp
     )

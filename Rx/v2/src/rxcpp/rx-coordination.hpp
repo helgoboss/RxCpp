@@ -22,12 +22,24 @@ struct is_coordinator<T, typename rxu::types_checked_from<typename T::coordinato
 struct tag_coordination {};
 struct coordination_base {typedef tag_coordination coordination_tag;};
 
+namespace detail {
+
 template<class T, class C = rxu::types_checked>
 struct is_coordination : public std::false_type {};
 
 template<class T>
 struct is_coordination<T, typename rxu::types_checked_from<typename T::coordination_tag>::type>
     : public std::is_convertible<typename T::coordination_tag*, tag_coordination*> {};
+
+}
+
+template<class T, class Decayed = rxu::decay_t<T>>
+struct is_coordination : detail::is_coordination<Decayed>
+{
+};
+
+template<class Coordination, class DecayedCoordination = rxu::decay_t<Coordination>>
+using coordination_tag_t = typename DecayedCoordination::coordination_tag;
 
 template<class Input>
 class coordinator : public coordinator_base
@@ -166,8 +178,7 @@ inline identity_one_worker identity_current_thread() {
 }
 
 inline identity_one_worker identity_same_worker(rxsc::worker w) {
-    static identity_one_worker r(rxsc::make_same_worker(w));
-    return r;
+    return identity_one_worker(rxsc::make_same_worker(w));
 }
 
 class serialize_one_worker : public coordination_base
@@ -184,7 +195,7 @@ class serialize_one_worker : public coordination_base
             , lock(std::move(m))
         {
             if (!lock) {
-                abort();
+                std::terminate();
             }
         }
         auto operator()(const rxsc::schedulable& scbl) const
@@ -209,7 +220,7 @@ class serialize_one_worker : public coordination_base
             , lock(std::move(m))
         {
             if (!lock) {
-                abort();
+                std::terminate();
             }
         }
         void on_next(value_type v) const {
@@ -297,8 +308,7 @@ inline serialize_one_worker serialize_new_thread() {
 }
 
 inline serialize_one_worker serialize_same_worker(rxsc::worker w) {
-    static serialize_one_worker r(rxsc::make_same_worker(w));
-    return r;
+    return serialize_one_worker(rxsc::make_same_worker(w));
 }
 
 }

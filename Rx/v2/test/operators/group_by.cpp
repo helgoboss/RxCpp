@@ -1,4 +1,6 @@
 #include "../test.h"
+#include <rxcpp/operators/rx-group_by.hpp>
+#include <rxcpp/operators/rx-reduce.hpp>
 
 #include <locale>
 
@@ -58,7 +60,7 @@ SCENARIO("range partitioned by group_by across hardware threads to derive pi", "
                                                 message << key << " on " << std::this_thread::get_id() << " - value: " << std::setprecision(16) << v;
                                                 return std::make_tuple(message.str(), v);
                                             }).
-                                        start_with(std::make_tuple(message.str(), 0)).
+                                        start_with(std::make_tuple(message.str(), 0.0L)).
                                         as_dynamic();
                                 }).
                             concat(). // only subscribe to one range at a time in this group.
@@ -129,7 +131,7 @@ SCENARIO("range partitioned by dividing work across hardware threads to derive p
                                     message << w.index << " on " << std::this_thread::get_id() << " - value: " << std::setprecision(16) << v;
                                     return std::make_tuple(message.str(), v);
                                 }).
-                            start_with(std::make_tuple(message.str(), 0)).
+                            start_with(std::make_tuple(message.str(), 0.0L)).
                             as_dynamic();
                     }).
                 merge(rxcpp::observe_on_new_thread()).
@@ -203,7 +205,7 @@ SCENARIO("group_by", "[group_by][operators]"){
             on.error(650, std::runtime_error("error in completed sequence"))
         });
 
-        WHEN("group each int with the next 2 ints"){
+        WHEN("group normalized strings"){
 
             auto res = w.start(
                 [&]() {
@@ -225,7 +227,7 @@ SCENARIO("group_by", "[group_by][operators]"){
                 }
             );
 
-            THEN("the output contains groups of ints"){
+            THEN("the output contains groups of group keys"){
                 auto required = rxu::to_vector({
                     on.next(220, "foo"),
                     on.next(270, "baR"),
@@ -251,6 +253,172 @@ SCENARIO("group_by", "[group_by][operators]"){
 
             THEN("marble selector was invoked for each value"){
                 REQUIRE(12 == marbleInvoked);
+            }
+        }
+    }
+}
+
+SCENARIO("group_by take 1", "[group_by][take][operators]"){
+    GIVEN("1 hot observable of ints."){
+        auto sc = rxsc::make_test();
+        auto w = sc.create_worker();
+        const rxsc::test::messages<long> on;
+        int keyInvoked = 0;
+        int marbleInvoked = 0;
+        int groupEmitted = 0;
+
+        auto xs = sc.make_hot_observable({
+            on.next(130, -1),
+            on.next(220, 0),
+            on.next(240, -1),
+            on.next(270, 2),
+            on.next(310, -3),
+            on.next(350, 4),
+            on.next(360, -5),
+            on.next(390, 6),
+            on.next(420, -7),
+            on.next(470, 8),
+            on.next(480, -9),
+            on.completed(570)
+        });
+
+        WHEN("1 group of ints is emitted"){
+
+            auto res = w.start(
+                [&]() {
+                    return xs
+                        | rxo::group_by(
+                            [&](long v) {
+                                ++keyInvoked;
+                                return v % 2;
+                            },
+                            [&](long v){
+                                ++marbleInvoked;
+                                return v;
+                            })
+                        | rxo::take(1)
+                        | rxo::map([&](const rxcpp::grouped_observable<long, long>& g) -> rxcpp::observable<long> {
+                            ++groupEmitted;
+                            return g;
+                        })
+                        | rxo::merge()
+                        // forget type to workaround lambda deduction bug on msvc 2013
+                        | rxo::as_dynamic();
+                }
+            );
+
+            THEN("the output contains groups of ints"){
+                auto required = rxu::to_vector({
+                    on.next(220, 0),
+                    on.next(270, 2),
+                    on.next(350, 4),
+                    on.next(390, 6),
+                    on.next(470, 8),
+                    on.completed(570)
+                });
+                auto actual = res.get_observer().messages();
+                REQUIRE(required == actual);
+            }
+
+            THEN("there was one subscription and one unsubscription to the xs"){
+                auto required = rxu::to_vector({
+                    on.subscribe(200, 570)
+                });
+                auto actual = xs.subscriptions();
+                REQUIRE(required == actual);
+            }
+
+            THEN("key selector was invoked for each value"){
+                REQUIRE(10 == keyInvoked);
+            }
+
+            THEN("marble selector was invoked for each value"){
+                REQUIRE(5 == marbleInvoked);
+            }
+
+            THEN("1 group emitted"){
+                REQUIRE(1 == groupEmitted);
+            }
+        }
+    }
+}
+
+SCENARIO("group_by take 1 take 4", "[group_by][take][operators]"){
+    GIVEN("1 hot observable of ints."){
+        auto sc = rxsc::make_test();
+        auto w = sc.create_worker();
+        const rxsc::test::messages<long> on;
+        int keyInvoked = 0;
+        int marbleInvoked = 0;
+        int groupEmitted = 0;
+
+        auto xs = sc.make_hot_observable({
+            on.next(130, -1),
+            on.next(220, 0),
+            on.next(240, -1),
+            on.next(270, 2),
+            on.next(310, -3),
+            on.next(350, 4),
+            on.next(360, -5),
+            on.next(390, 6),
+            on.next(420, -7),
+        });
+
+        WHEN("1 group of ints is emitted"){
+
+            auto res = w.start(
+                [&]() {
+                    return xs
+                        .group_by(
+                            [&](long v) {
+                                ++keyInvoked;
+                                return v % 2;
+                            },
+                            [&](long v){
+                                ++marbleInvoked;
+                                return v;
+                            })
+                        .take(1)
+                        .map([&](const rxcpp::grouped_observable<long, long>& g) -> rxcpp::observable<long> {
+                            ++groupEmitted;
+                            return g.take(4);
+                        })
+                        .merge()
+                        // forget type to workaround lambda deduction bug on msvc 2013
+                        .as_dynamic();
+                }
+            );
+
+            THEN("the output contains groups of ints"){
+                auto required = rxu::to_vector({
+                    on.next(220, 0),
+                    on.next(270, 2),
+                    on.next(350, 4),
+                    on.next(390, 6),
+                    on.completed(390)
+                });
+                auto actual = res.get_observer().messages();
+                REQUIRE(required == actual);
+            }
+
+            THEN("there was one subscription and one unsubscription to the xs"){
+                auto required = rxu::to_vector({
+                    on.subscribe(200, 390)
+                });
+                auto actual = xs.subscriptions();
+                REQUIRE(required == actual);
+            }
+
+            THEN("key selector was invoked for each value"){
+                REQUIRE(7 == keyInvoked);
+            }
+
+            THEN("marble selector was invoked for each value"){
+                REQUIRE(4 == marbleInvoked);
+            }
+
+            THEN("1 group emitted"){
+                REQUIRE(1 == groupEmitted);
             }
         }
     }

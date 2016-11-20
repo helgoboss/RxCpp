@@ -26,7 +26,9 @@ add_subdirectory(${EXAMPLES_DIR}/tests ${CMAKE_CURRENT_BINARY_DIR}/examples/test
 
 # The list of RxCpp source files. Please add every new file to this list
 set(RX_SOURCES
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-all.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-amb.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-any.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-buffer_count.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-buffer_time.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-buffer_time_count.hpp
@@ -34,6 +36,7 @@ set(RX_SOURCES
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-concat.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-concat_map.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-connect_forever.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-debounce.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-delay.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-distinct.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-distinct_until_changed.hpp
@@ -58,15 +61,23 @@ set(RX_SOURCES
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-retry.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-sample_time.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-scan.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-sequence_equal.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-skip.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-skip_last.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-skip_until.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-start_with.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-subscribe.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-subscribe_on.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-switch_if_empty.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-switch_on_next.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-take.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-take_last.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-take_until.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-tap.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-time_interval.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-timeout.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-timestamp.hpp
+   ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-with_latest_from.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-window.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-window_time.hpp
    ${RXCPP_DIR}/Rx/v2/src/rxcpp/operators/rx-window_time_count.hpp
@@ -117,3 +128,8 @@ source_group("src" FILES ${RX_SOURCES})
 
 add_library(RxCpp SHARED ${RX_SOURCES})
 SET_TARGET_PROPERTIES(RxCpp PROPERTIES LINKER_LANGUAGE CXX)
+
+set(CMAKE_SKIP_INSTALL_ALL_DEPENDENCY TRUE CACHE BOOL "Don't require all projects to be built in order to install" FORCE)
+
+install(DIRECTORY ${RXCPP_DIR}/Rx/v2/src/rxcpp/ DESTINATION rxcpp
+        FILES_MATCHING PATTERN "*.hpp")

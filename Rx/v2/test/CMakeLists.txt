@@ -24,19 +24,25 @@ set(TEST_SOURCES
     ${TEST_DIR}/subjects/subject.cpp
     ${TEST_DIR}/sources/create.cpp
     ${TEST_DIR}/sources/defer.cpp
+    ${TEST_DIR}/sources/empty.cpp
     ${TEST_DIR}/sources/interval.cpp
     ${TEST_DIR}/sources/scope.cpp
     ${TEST_DIR}/sources/timer.cpp
+    ${TEST_DIR}/operators/all.cpp
     ${TEST_DIR}/operators/amb.cpp
     ${TEST_DIR}/operators/amb_variadic.cpp
     ${TEST_DIR}/operators/buffer.cpp
     ${TEST_DIR}/operators/combine_latest.cpp
     ${TEST_DIR}/operators/concat.cpp
     ${TEST_DIR}/operators/concat_map.cpp
+    ${TEST_DIR}/operators/contains.cpp
+    ${TEST_DIR}/operators/debounce.cpp
+    ${TEST_DIR}/operators/default_if_empty.cpp
     ${TEST_DIR}/operators/delay.cpp
     ${TEST_DIR}/operators/distinct.cpp
     ${TEST_DIR}/operators/distinct_until_changed.cpp
     ${TEST_DIR}/operators/element_at.cpp
+    ${TEST_DIR}/operators/exists.cpp
     ${TEST_DIR}/operators/filter.cpp
     ${TEST_DIR}/operators/flat_map.cpp
     ${TEST_DIR}/operators/group_by.cpp
@@ -54,14 +60,23 @@ set(TEST_SOURCES
     ${TEST_DIR}/operators/retry.cpp
     ${TEST_DIR}/operators/sample.cpp
     ${TEST_DIR}/operators/scan.cpp
+    ${TEST_DIR}/operators/sequence_equal.cpp
     ${TEST_DIR}/operators/skip.cpp
+    ${TEST_DIR}/operators/skip_last.cpp
     ${TEST_DIR}/operators/skip_until.cpp
     ${TEST_DIR}/operators/subscribe_on.cpp
+    ${TEST_DIR}/operators/switch_if_empty.cpp
     ${TEST_DIR}/operators/switch_on_next.cpp
     ${TEST_DIR}/operators/take.cpp
+    ${TEST_DIR}/operators/take_last.cpp
     ${TEST_DIR}/operators/take_until.cpp
     ${TEST_DIR}/operators/tap.cpp
+    ${TEST_DIR}/operators/time_interval.cpp
+    ${TEST_DIR}/operators/timeout.cpp
+    ${TEST_DIR}/operators/timestamp.cpp
+    ${TEST_DIR}/operators/with_latest_from.cpp
     ${TEST_DIR}/operators/window.cpp
+    ${TEST_DIR}/operators/window_toggle.cpp
     ${TEST_DIR}/operators/zip.cpp
 )
 
